@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:client\"",
+    "dev": "tsx watch server/index.ts",
     "dev:client": "vite",
     "dev:server": "tsx watch server/index.ts",
     "build": "tsc -p tsconfig.server.json && vite build",

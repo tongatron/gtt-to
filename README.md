@@ -17,9 +17,11 @@ npm run dev
 
 URL:
 
-- frontend: `http://localhost:5173`
-- backend API: `http://localhost:3210`
+- app: `http://localhost:3210`
+- backend API: `http://localhost:3210/api/*`
 - healthcheck: `http://localhost:3210/api/health`
+
+In sviluppo frontend e backend passano dallo stesso server locale, cosi non sembra di avere due app separate.
 
 ## Build locale completa
 

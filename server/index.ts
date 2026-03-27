@@ -1,10 +1,12 @@
 import path from 'node:path'
 import { existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
 import { unzipSync, strFromU8 } from 'fflate'
 import { parse } from 'csv-parse/sync'
 import protobuf from 'protobufjs'
+import type { ViteDevServer } from 'vite'
 
 const PORT = Number(process.env.PORT ?? 3210)
 const TRIP_UPDATE_FEED_URL =
@@ -402,7 +404,10 @@ const MODE_SORT_ORDER: Record<VehicleMode, number> = {
   other: 5,
 }
 const serverDir = path.dirname(fileURLToPath(import.meta.url))
+const projectRootDir = path.resolve(serverDir, '..')
 const staticDistDir = path.resolve(serverDir, '../dist')
+const sourceIndexHtmlPath = path.join(projectRootDir, 'index.html')
+const isDevelopment = process.env.NODE_ENV !== 'production'
 
 const staticCache: StaticCacheEntry = {
   data: {
@@ -2079,29 +2084,69 @@ app.get('/api/line-paths', async (request, response, next) => {
   }
 })
 
-if (existsSync(staticDistDir)) {
-  app.use(express.static(staticDistDir))
+async function configureFrontend() {
+  if (isDevelopment) {
+    const { createServer } = await import('vite')
+    const vite = await createServer({
+      root: projectRootDir,
+      server: {
+        middlewareMode: true,
+      },
+      appType: 'custom',
+    })
 
-  app.get(/^(?!\/api).*/, (_request, response) => {
-    response.sendFile(path.join(staticDistDir, 'index.html'))
+    app.use(vite.middlewares)
+    app.get(/^(?!\/api).*/, createDevelopmentAppHandler(vite))
+    return
+  }
+
+  if (existsSync(staticDistDir)) {
+    app.use(express.static(staticDistDir))
+
+    app.get(/^(?!\/api).*/, (_request, response) => {
+      response.sendFile(path.join(staticDistDir, 'index.html'))
+    })
+  }
+}
+
+function createDevelopmentAppHandler(vite: ViteDevServer) {
+  return async (request: express.Request, response: express.Response, next: express.NextFunction) => {
+    try {
+      const template = await readFile(sourceIndexHtmlPath, 'utf8')
+      const html = await vite.transformIndexHtml(request.originalUrl, template)
+
+      response
+        .status(200)
+        .setHeader('Content-Type', 'text/html')
+        .send(html)
+    } catch (error) {
+      vite.ssrFixStacktrace(error as Error)
+      next(error)
+    }
+  }
+}
+
+async function startServer() {
+  await configureFrontend()
+
+  app.use(
+    (
+      error: unknown,
+      _request: express.Request,
+      response: express.Response,
+      next: express.NextFunction,
+    ) => {
+      void next
+      const message =
+        error instanceof Error ? error.message : 'Unexpected server error'
+
+      response.status(500).json({ error: message })
+    },
+  )
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Transit server listening on http://0.0.0.0:${PORT}`)
   })
 }
 
-app.use(
-  (
-    error: unknown,
-    _request: express.Request,
-    response: express.Response,
-    next: express.NextFunction,
-  ) => {
-    void next
-    const message =
-      error instanceof Error ? error.message : 'Unexpected server error'
-
-    response.status(500).json({ error: message })
-  },
-)
-
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Transit server listening on http://0.0.0.0:${PORT}`)
-})
+void startServer()
