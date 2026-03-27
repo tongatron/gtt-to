@@ -371,8 +371,11 @@ function App() {
   const [recenterUserLocationRequest, setRecenterUserLocationRequest] = useState(0)
   const hasLoadedVehiclesRef = useRef(false)
   const hasRestoredLineRef = useRef(false)
+  const hasRequestedLinesCatalogRef = useRef(false)
 
   const loadLinesCatalog = useCallback(async (signal?: AbortSignal) => {
+    hasRequestedLinesCatalogRef.current = true
+
     try {
       setLoadingLinesCatalog(true)
       const apiResponse = await fetch('/api/lines', { signal })
@@ -753,6 +756,18 @@ function App() {
     setRecenterUserLocationRequest((value) => value + 1)
   }, [focusLocation])
 
+  const ensureLinesCatalogLoaded = useCallback(() => {
+    if (
+      hasRequestedLinesCatalogRef.current ||
+      loadingLinesCatalog ||
+      linesCatalogResponse
+    ) {
+      return
+    }
+
+    void loadLinesCatalog()
+  }, [linesCatalogResponse, loadLinesCatalog, loadingLinesCatalog])
+
   useEffect(() => {
     if (hasRestoredLineRef.current) {
       return
@@ -767,15 +782,6 @@ function App() {
     setLineInput(storedLine)
     void loadVehicles(storedLine)
   }, [loadVehicles])
-
-  useEffect(() => {
-    const abortController = new AbortController()
-    void loadLinesCatalog(abortController.signal)
-
-    return () => {
-      abortController.abort()
-    }
-  }, [loadLinesCatalog])
 
   useEffect(() => {
     if (!selectedLine) {
@@ -974,6 +980,7 @@ function App() {
                   value={lineInput}
                   aria-label="Inserisci una linea"
                   placeholder="Es. 4, 46, M1"
+                  onFocus={ensureLinesCatalogLoaded}
                   onChange={(event) => setLineInput(event.target.value.toUpperCase())}
                 />
 
