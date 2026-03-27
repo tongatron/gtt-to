@@ -3,7 +3,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type FormEvent,
 } from 'react'
@@ -12,195 +11,51 @@ import type {
   AddressSearchResponse,
   ArrivalRecord,
   FocusLocation,
-  LineCatalogRecord,
+  LinePathRecord,
   LinePathsResponse,
   LineVehicleRecord,
   LineVehiclesResponse,
-  LinesCatalogResponse,
   NearbyStopsResponse,
   StopArrivalsResponse,
   StopRecord,
   StopServiceRecord,
-  VehicleMode,
 } from './types'
 import './App.css'
 
 const POLL_INTERVAL_MS = 15_000
-const LAST_LINE_STORAGE_KEY = 'torino-line-radar:last-line'
 const DEFAULT_STOPS_RADIUS_METERS = 1400
 const DEFAULT_STOPS_LIMIT = 20
-const TURIN_CENTER = {
-  latitude: 45.0703,
-  longitude: 7.6869,
-}
-const SIMULATION_DESTINATIONS = [
-  'Porta Nuova',
-  'Lingotto',
-  'Falchera',
-  'Stura',
-  'Rivoli',
-  'Mirafiori',
-  'Centro',
-  'Parco Dora',
-]
-const MODE_LABELS: Record<VehicleMode, string> = {
-  metro: 'Metro',
-  tram: 'Tram',
-  bus: 'Bus',
-  rail: 'Treno',
-  trolleybus: 'Filobus',
-  other: 'Altro',
-}
-const MODE_ROUTE_COLORS: Record<VehicleMode, string> = {
-  metro: '#0057b8',
-  tram: '#ffd900',
-  bus: '#0057b8',
-  rail: '#003b7d',
-  trolleybus: '#3a7abd',
-  other: '#7b8da5',
-}
-type VehicleModeFilter = 'all' | 'bus' | 'tram' | 'metro' | 'trolleybus' | 'rail'
+const RECENT_SELECTIONS_STORAGE_KEY = 'gtt-to:recent-selections'
+const MAX_RECENT_SELECTIONS = 3
+const SIMULATION_STOP_CODE = '240'
+const SIMULATION_LINE_CODE = '4'
+const SIMULATION_UPDATE_INTERVAL_MS = 1_000
 
-const MODE_FILTER_ORDER: VehicleModeFilter[] = [
-  'all',
-  'bus',
-  'tram',
-  'metro',
-  'trolleybus',
-  'rail',
-]
-const MODE_FILTER_LABELS: Record<VehicleModeFilter, string> = {
-  all: 'Tutti',
-  bus: 'Bus',
-  tram: 'Tram',
-  metro: 'Metro',
-  trolleybus: 'Filobus',
-  rail: 'Treno',
+type EntryMode = 'location' | 'stop' | 'address' | 'simulation' | null
+
+interface LineChoice {
+  service: StopServiceRecord
+  nextArrivalMinutes: number | null
+  nextArrivalLabel: string
 }
 
-interface BeforeInstallPromptEvent extends Event {
-  prompt: () => Promise<void>
-  userChoice: Promise<{
-    outcome: 'accepted' | 'dismissed'
-    platform: string
-  }>
+interface DirectionChoice {
+  key: string
+  label: string
 }
 
-function randomBetween(min: number, max: number): number {
-  return min + Math.random() * (max - min)
+interface RecentSelection {
+  stopCode: string
+  stopName: string
+  lineCode: string
+  latitude: number
+  longitude: number
+  savedAt: string
 }
 
-function randomInt(min: number, max: number): number {
-  return Math.floor(randomBetween(min, max + 1))
-}
-
-function pickRandomDestination(exclude?: string): string {
-  const candidates = SIMULATION_DESTINATIONS.filter(
-    (destination) => destination !== exclude,
-  )
-
-  return candidates[randomInt(0, candidates.length - 1)] ?? 'Centro'
-}
-
-function inferSimulationMode(line: string): VehicleMode {
-  if (/^M/i.test(line)) {
-    return 'metro'
-  }
-
-  if (/^T/i.test(line)) {
-    return 'tram'
-  }
-
-  if (/^\d+$/.test(line)) {
-    const lineNumber = Number.parseInt(line, 10)
-    if ([3, 4, 7, 9, 10, 13, 15, 16].includes(lineNumber)) {
-      return 'tram'
-    }
-  }
-
-  return 'bus'
-}
-
-function createSimulatedVehicles(line: string): LineVehicleRecord[] {
-  const mode = inferSimulationMode(line)
-  const modeLabel = MODE_LABELS[mode]
-  const routeColor = MODE_ROUTE_COLORS[mode]
-  const routeTextColor = mode === 'tram' ? '#0057b8' : '#ffffff'
-  const vehicleCount = randomInt(6, 12)
-  const directionAngle = randomBetween(0, Math.PI * 2)
-  const directionLatitude = Math.sin(directionAngle) * 0.034
-  const directionLongitude = Math.cos(directionAngle) * 0.055
-  const lateralLatitude = Math.sin(directionAngle + Math.PI / 2) * 0.005
-  const lateralLongitude = Math.cos(directionAngle + Math.PI / 2) * 0.009
-  const baseBearing =
-    ((Math.atan2(directionLongitude, directionLatitude) * 180) / Math.PI + 360) % 360
-  const outboundHeadsign = pickRandomDestination()
-  const inboundHeadsign = pickRandomDestination(outboundHeadsign)
-  const now = Date.now()
-
-  return Array.from({ length: vehicleCount }, (_, index) => {
-    const normalizedProgress =
-      vehicleCount === 1 ? 0 : -1 + (2 * index) / (vehicleCount - 1)
-    const progress = normalizedProgress + randomBetween(-0.12, 0.12)
-    const lateralOffset = randomBetween(-1, 1)
-    const forwardDirection = index % 2 === 0
-    const bearing = forwardDirection ? baseBearing : (baseBearing + 180) % 360
-
-    return {
-      tripId: `test:${line}:${now}:${index}`,
-      vehicleId: `sim-${line}-${now}-${index}`,
-      vehicleLabel: String(randomInt(1000, 9999)),
-      lineCode: line,
-      routeId: `sim:${line}`,
-      routeName: `Simulazione linea ${line}`,
-      headsign: forwardDirection ? outboundHeadsign : inboundHeadsign,
-      mode,
-      modeLabel,
-      routeColor,
-      routeTextColor,
-      latitude:
-        TURIN_CENTER.latitude +
-        progress * directionLatitude +
-        lateralOffset * lateralLatitude,
-      longitude:
-        TURIN_CENTER.longitude +
-        progress * directionLongitude +
-        lateralOffset * lateralLongitude,
-      bearing,
-      speedMetersPerSecond: randomBetween(4, 13),
-      timestamp: new Date(now - randomInt(5_000, 95_000)).toISOString(),
-    }
-  })
-}
-
-function createSimulatedResponse(line: string): LineVehiclesResponse {
-  const timestamp = new Date().toISOString()
-
-  return {
-    fetchedAt: timestamp,
-    feedTimestamp: timestamp,
-    stale: false,
-    warnings: ['TEST simulazione traffico attiva: mezzi generati casualmente.'],
-    line,
-    vehicles: createSimulatedVehicles(line),
-  }
-}
-
-function formatFeedAge(value: string | null): string {
-  if (!value) {
-    return 'timestamp non disponibile'
-  }
-
-  const diffInSeconds = Math.max(
-    0,
-    Math.round((Date.now() - new Date(value).getTime()) / 1000),
-  )
-
-  if (diffInSeconds < 60) {
-    return `${diffInSeconds}s fa`
-  }
-
-  return `${Math.round(diffInSeconds / 60)} min fa`
+interface SimulationSeed {
+  stop: StopRecord
+  paths: LinePathRecord[]
 }
 
 function formatTime(value: string | null): string {
@@ -224,6 +79,21 @@ function formatMinutesUntil(value: number): string {
   }
 
   return `${value} min`
+}
+
+function formatUpdatedAgo(value: string | null | undefined, nowMs: number): string {
+  if (!value) {
+    return 'aggiornamento n/d'
+  }
+
+  const diffInSeconds = Math.max(0, Math.round((nowMs - new Date(value).getTime()) / 1000))
+
+  if (diffInSeconds < 60) {
+    return `${diffInSeconds}s fa`
+  }
+
+  const diffInMinutes = Math.floor(diffInSeconds / 60)
+  return `${diffInMinutes} min fa`
 }
 
 function formatDistance(value?: number): string {
@@ -274,41 +144,241 @@ function formatDestinationPlace(value: string): string {
 function formatDestinationLabel(value: string | null | undefined): string {
   const normalizedValue = value?.trim()
   return normalizedValue
-    ? `Destinazione ${formatDestinationPlace(normalizedValue)}`
+    ? formatDestinationPlace(normalizedValue)
     : 'Destinazione non disponibile'
 }
 
-function buildModesSummary(vehicles: LineVehicleRecord[]): string {
-  const labels = Array.from(new Set(vehicles.map((vehicle) => vehicle.modeLabel)))
-  return labels.length > 0 ? labels.join(' · ') : 'n/d'
+function normalizeDirectionKey(value: string | null | undefined): string {
+  return (value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
 }
 
-function buildHeadsignSummary(vehicles: LineVehicleRecord[]): string {
-  const headsigns = Array.from(
-    new Set(
-      vehicles
-        .map((vehicle) => vehicle.headsign?.trim())
-        .filter((value): value is string => Boolean(value)),
-    ),
+function calculateBearing(
+  start: { latitude: number; longitude: number },
+  end: { latitude: number; longitude: number },
+): number {
+  return ((Math.atan2(end.longitude - start.longitude, end.latitude - start.latitude) * 180) / Math.PI + 360) % 360
+}
+
+function calculateSegmentDistanceMeters(
+  start: { latitude: number; longitude: number },
+  end: { latitude: number; longitude: number },
+): number {
+  const earthRadiusMeters = 6_371_000
+  const toRadians = (value: number) => (value * Math.PI) / 180
+  const deltaLatitude = toRadians(end.latitude - start.latitude)
+  const deltaLongitude = toRadians(end.longitude - start.longitude)
+  const startLatitude = toRadians(start.latitude)
+  const endLatitude = toRadians(end.latitude)
+  const a =
+    Math.sin(deltaLatitude / 2) * Math.sin(deltaLatitude / 2) +
+    Math.cos(startLatitude) *
+      Math.cos(endLatitude) *
+      Math.sin(deltaLongitude / 2) *
+      Math.sin(deltaLongitude / 2)
+
+  return 2 * earthRadiusMeters * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+function interpolatePathPosition(path: LinePathRecord, progress: number): {
+  latitude: number
+  longitude: number
+  bearing: number
+} | null {
+  if (path.points.length < 2) {
+    return null
+  }
+
+  const normalizedProgress = Math.max(0, Math.min(0.999, progress))
+  const segments: Array<{
+    start: LinePathRecord['points'][number]
+    end: LinePathRecord['points'][number]
+    startDistance: number
+    endDistance: number
+  }> = []
+  let totalDistance = 0
+
+  for (let index = 1; index < path.points.length; index += 1) {
+    const start = path.points[index - 1]
+    const end = path.points[index]
+
+    if (!start || !end) {
+      continue
+    }
+
+    const segmentDistance = calculateSegmentDistanceMeters(start, end)
+    if (segmentDistance <= 0) {
+      continue
+    }
+
+    segments.push({
+      start,
+      end,
+      startDistance: totalDistance,
+      endDistance: totalDistance + segmentDistance,
+    })
+    totalDistance += segmentDistance
+  }
+
+  if (segments.length === 0 || totalDistance <= 0) {
+    return null
+  }
+
+  const targetDistance = normalizedProgress * totalDistance
+  const segment =
+    segments.find((currentSegment) => targetDistance <= currentSegment.endDistance) ??
+    segments[segments.length - 1]
+
+  if (!segment) {
+    return null
+  }
+
+  const segmentSpan = segment.endDistance - segment.startDistance
+  const ratio =
+    segmentSpan <= 0 ? 0 : (targetDistance - segment.startDistance) / segmentSpan
+
+  return {
+    latitude: segment.start.latitude + (segment.end.latitude - segment.start.latitude) * ratio,
+    longitude: segment.start.longitude + (segment.end.longitude - segment.start.longitude) * ratio,
+    bearing: calculateBearing(segment.start, segment.end),
+  }
+}
+
+function buildSimulatedArrivals(
+  stop: StopRecord,
+  paths: LinePathRecord[],
+  now: Date,
+): ArrivalRecord[] {
+  const directionPaths = paths.slice(0, 2)
+
+  return directionPaths
+    .flatMap((path, pathIndex) => {
+      const headsign = path.headsign ?? `Direzione ${pathIndex + 1}`
+      const minuteOffsets = pathIndex === 0 ? [5, 11, 15] : [7, 12, 14]
+
+      return minuteOffsets.map((minutesUntil, arrivalIndex) => {
+        const predictedDate = new Date(now.getTime() + minutesUntil * 60_000)
+        const position = interpolatePathPosition(
+          path,
+          Math.max(0.05, 0.82 - arrivalIndex * 0.18 - pathIndex * 0.04),
+        )
+
+        return {
+          tripId: `sim-arrival:${path.pathId}:${arrivalIndex}`,
+          lineCode: SIMULATION_LINE_CODE,
+          routeId: `${SIMULATION_LINE_CODE}:${path.directionId ?? pathIndex}`,
+          routeName: `Linea ${SIMULATION_LINE_CODE}`,
+          headsign,
+          mode: 'tram',
+          modeLabel: 'Tram',
+          routeColor: path.routeColor ?? '#ffd900',
+          routeTextColor: path.routeTextColor ?? '#16385e',
+          scheduledArrival: predictedDate.toISOString(),
+          predictedArrival: predictedDate.toISOString(),
+          delaySeconds: 0,
+          minutesUntil,
+          vehicleId: `sim-vehicle:${path.pathId}:${arrivalIndex}`,
+          vehicleLabel: `${SIMULATION_LINE_CODE}${pathIndex + 1}${arrivalIndex + 1}`,
+          vehiclePosition: position
+            ? {
+                latitude: position.latitude,
+                longitude: position.longitude,
+                bearing: position.bearing,
+                speedMetersPerSecond: 7,
+                timestamp: now.toISOString(),
+              }
+            : null,
+          realtime: true,
+        }
+      })
+    })
+    .sort((left, right) => left.minutesUntil - right.minutesUntil)
+}
+
+function buildSimulatedVehicles(paths: LinePathRecord[], now: Date): LineVehicleRecord[] {
+  const directionPaths = paths.slice(0, 2)
+  const phaseSeconds = now.getTime() / 1000
+
+  return directionPaths.flatMap((path, pathIndex) => {
+    const headsign = path.headsign ?? `Direzione ${pathIndex + 1}`
+    const vehicleOffsets = pathIndex === 0 ? [0.18, 0.62] : [0.32, 0.78]
+
+    return vehicleOffsets.flatMap((offset, vehicleIndex) => {
+      const progress = (offset + phaseSeconds * 0.0013 + pathIndex * 0.08) % 1
+      const position = interpolatePathPosition(path, progress)
+
+      if (!position) {
+        return []
+      }
+
+      return {
+        tripId: `sim-trip:${path.pathId}:${vehicleIndex}`,
+        vehicleId: `sim-vehicle:${path.pathId}:${vehicleIndex}`,
+        vehicleLabel: `${SIMULATION_LINE_CODE}${pathIndex + 1}${vehicleIndex + 1}`,
+        lineCode: SIMULATION_LINE_CODE,
+        routeId: `${SIMULATION_LINE_CODE}:${path.directionId ?? pathIndex}`,
+        routeName: `Linea ${SIMULATION_LINE_CODE}`,
+        headsign,
+        mode: 'tram',
+        modeLabel: 'Tram',
+        routeColor: path.routeColor ?? '#ffd900',
+        routeTextColor: path.routeTextColor ?? '#16385e',
+        latitude: position.latitude,
+        longitude: position.longitude,
+        bearing: position.bearing,
+        speedMetersPerSecond: 7 + vehicleIndex,
+        timestamp: now.toISOString(),
+      }
+    })
+  })
+}
+
+function readRecentSelections(): RecentSelection[] {
+  if (typeof window === 'undefined') {
+    return []
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(RECENT_SELECTIONS_STORAGE_KEY)
+    if (!rawValue) {
+      return []
+    }
+
+    const parsedValue = JSON.parse(rawValue) as unknown
+    if (!Array.isArray(parsedValue)) {
+      return []
+    }
+
+    return parsedValue
+      .filter((item): item is RecentSelection => {
+        return (
+          typeof item === 'object' &&
+          item !== null &&
+          typeof item.stopCode === 'string' &&
+          typeof item.stopName === 'string' &&
+          typeof item.lineCode === 'string' &&
+          typeof item.latitude === 'number' &&
+          typeof item.longitude === 'number' &&
+          typeof item.savedAt === 'string'
+        )
+      })
+      .slice(0, MAX_RECENT_SELECTIONS)
+  } catch {
+    return []
+  }
+}
+
+function writeRecentSelections(selections: RecentSelection[]): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  window.localStorage.setItem(
+    RECENT_SELECTIONS_STORAGE_KEY,
+    JSON.stringify(selections.slice(0, MAX_RECENT_SELECTIONS)),
   )
-
-  if (headsigns.length === 0) {
-    return 'Destinazioni non disponibili'
-  }
-
-  return `Destinazioni: ${headsigns
-    .slice(0, 4)
-    .map((headsign) => formatDestinationPlace(headsign))
-    .join(' | ')}`
-}
-
-function buildStopServicesSummary(services: StopServiceRecord[]): string {
-  const lines = Array.from(new Set(services.map((service) => service.lineCode)))
-  if (lines.length === 0) {
-    return 'Linee non disponibili'
-  }
-
-  return lines.slice(0, 8).join(', ')
 }
 
 function buildSelectableStopServices(services: StopServiceRecord[]): StopServiceRecord[] {
@@ -325,166 +395,81 @@ function buildSelectableStopServices(services: StopServiceRecord[]): StopService
   )
 }
 
-function mergeWarnings(...lists: Array<string[] | undefined>): string[] {
-  return Array.from(
-    new Set(
-      lists.flatMap((items) => items ?? []),
-    ),
-  )
-}
+function buildLineChoices(
+  services: StopServiceRecord[],
+  arrivals: ArrivalRecord[],
+): LineChoice[] {
+  return buildSelectableStopServices(services)
+    .map((service) => {
+      const nextArrival = arrivals
+        .filter((arrival) => arrival.lineCode === service.lineCode)
+        .sort((left, right) => left.minutesUntil - right.minutesUntil)[0] ?? null
 
-function compareLineCatalogRecords(left: LineCatalogRecord, right: LineCatalogRecord): number {
-  return left.lineCode.localeCompare(right.lineCode, 'it', {
-    numeric: true,
-    sensitivity: 'base',
-  })
+      return {
+        service,
+        nextArrivalMinutes: nextArrival?.minutesUntil ?? null,
+        nextArrivalLabel: nextArrival
+          ? formatMinutesUntil(nextArrival.minutesUntil)
+          : 'nessun passaggio vicino',
+      }
+    })
+    .sort((left, right) => {
+      if (left.nextArrivalMinutes === null && right.nextArrivalMinutes === null) {
+        return left.service.lineCode.localeCompare(right.service.lineCode, 'it', {
+          numeric: true,
+        })
+      }
+
+      if (left.nextArrivalMinutes === null) {
+        return 1
+      }
+
+      if (right.nextArrivalMinutes === null) {
+        return -1
+      }
+
+      if (left.nextArrivalMinutes !== right.nextArrivalMinutes) {
+        return left.nextArrivalMinutes - right.nextArrivalMinutes
+      }
+
+      return left.service.lineCode.localeCompare(right.service.lineCode, 'it', {
+        numeric: true,
+      })
+    })
 }
 
 function App() {
-  const [lineInput, setLineInput] = useState('')
+  const [entryMode, setEntryMode] = useState<EntryMode>(null)
   const [addressInput, setAddressInput] = useState('')
-  const [selectedModeFilter, setSelectedModeFilter] =
-    useState<VehicleModeFilter>('all')
-  const [selectedLine, setSelectedLine] = useState<string | null>(null)
-  const [linesCatalogResponse, setLinesCatalogResponse] =
-    useState<LinesCatalogResponse | null>(null)
-  const [vehiclesResponse, setVehiclesResponse] = useState<LineVehiclesResponse | null>(null)
-  const [linePathsResponse, setLinePathsResponse] = useState<LinePathsResponse | null>(null)
-  const [loadingLinesCatalog, setLoadingLinesCatalog] = useState(false)
-  const [loadingVehicles, setLoadingVehicles] = useState(false)
-  const [refreshingVehicles, setRefreshingVehicles] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [simulationMode, setSimulationMode] = useState(false)
+  const [stopCodeInput, setStopCodeInput] = useState('')
   const [focusLocation, setFocusLocation] = useState<FocusLocation | null>(null)
   const [nearbyStops, setNearbyStops] = useState<StopRecord[]>([])
-  const [showStops, setShowStops] = useState(false)
-  const [loadingLocation, setLoadingLocation] = useState(false)
-  const [searchingAddress, setSearchingAddress] = useState(false)
   const [selectedStopCode, setSelectedStopCode] = useState<string | null>(null)
   const [selectedStopResponse, setSelectedStopResponse] =
     useState<StopArrivalsResponse | null>(null)
+  const [selectedLine, setSelectedLine] = useState<string | null>(null)
+  const [selectedDirectionKey, setSelectedDirectionKey] = useState<string | null>(null)
+  const [vehiclesResponse, setVehiclesResponse] = useState<LineVehiclesResponse | null>(null)
+  const [linePathsResponse, setLinePathsResponse] = useState<LinePathsResponse | null>(null)
+  const [recentSelections, setRecentSelections] = useState<RecentSelection[]>([])
+  const [simulationMode, setSimulationMode] = useState(false)
+  const [simulationSeed, setSimulationSeed] = useState<SimulationSeed | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loadingLocation, setLoadingLocation] = useState(false)
+  const [searchingAddress, setSearchingAddress] = useState(false)
+  const [searchingStopCode, setSearchingStopCode] = useState(false)
   const [loadingStopArrivals, setLoadingStopArrivals] = useState(false)
-  const [installPromptEvent, setInstallPromptEvent] =
-    useState<BeforeInstallPromptEvent | null>(null)
-  const [installingApp, setInstallingApp] = useState(false)
-  const [isStandalone, setIsStandalone] = useState(false)
-  const [recenterUserLocationRequest, setRecenterUserLocationRequest] = useState(0)
-  const hasLoadedVehiclesRef = useRef(false)
-  const hasRestoredLineRef = useRef(false)
-  const hasRequestedLinesCatalogRef = useRef(false)
+  const [loadingVehicles, setLoadingVehicles] = useState(false)
+  const [refreshingVehicles, setRefreshingVehicles] = useState(false)
+  const [recenterFocusRequest, setRecenterFocusRequest] = useState(0)
+  const [nowTickMs, setNowTickMs] = useState(() => Date.now())
 
-  const loadLinesCatalog = useCallback(async (signal?: AbortSignal) => {
-    hasRequestedLinesCatalogRef.current = true
-
-    try {
-      setLoadingLinesCatalog(true)
-      const apiResponse = await fetch('/api/lines', { signal })
-
-      if (!apiResponse.ok) {
-        const payload = (await apiResponse.json().catch(() => null)) as
-          | { error?: string }
-          | null
-        throw new Error(payload?.error ?? `API responded with ${apiResponse.status}`)
-      }
-
-      const payload = (await apiResponse.json()) as LinesCatalogResponse
-      startTransition(() => {
-        setLinesCatalogResponse(payload)
-      })
-
-      return payload
-    } catch (fetchError) {
-      if ((fetchError as Error).name === 'AbortError') {
-        return null
-      }
-
-      setError(
-        fetchError instanceof Error
-          ? fetchError.message
-          : 'Impossibile caricare il catalogo linee.',
-      )
-
-      return null
-    } finally {
-      setLoadingLinesCatalog(false)
-    }
-  }, [])
-
-  const loadVehicles = useCallback(async (
-    line: string,
-    options?: {
-      signal?: AbortSignal
-      syncInput?: boolean
-    },
-  ) => {
-    const normalizedLine = line.trim().toUpperCase()
-    if (!normalizedLine) {
-      setError('Inserisci una linea.')
-      return null
-    }
-
+  const loadNearbyStops = useCallback(async (location: FocusLocation, signal?: AbortSignal) => {
     try {
       setError(null)
-      if (hasLoadedVehiclesRef.current) {
-        setRefreshingVehicles(true)
-      } else {
-        setLoadingVehicles(true)
-      }
 
       const apiResponse = await fetch(
-        `/api/vehicles?line=${encodeURIComponent(normalizedLine)}`,
-        { signal: options?.signal },
-      )
-
-      if (!apiResponse.ok) {
-        const payload = (await apiResponse.json().catch(() => null)) as
-          | { error?: string }
-          | null
-        throw new Error(payload?.error ?? `API responded with ${apiResponse.status}`)
-      }
-
-      const payload = (await apiResponse.json()) as LineVehiclesResponse
-      startTransition(() => {
-        setSimulationMode(false)
-        setVehiclesResponse(payload)
-        setSelectedLine(payload.line.toUpperCase())
-        if (options?.syncInput ?? true) {
-          setLineInput(payload.line.toUpperCase())
-        }
-      })
-
-      return payload
-    } catch (fetchError) {
-      if ((fetchError as Error).name === 'AbortError') {
-        return null
-      }
-
-      setError(
-        fetchError instanceof Error
-          ? fetchError.message
-          : 'Impossibile caricare i mezzi della linea.',
-      )
-
-      return null
-    } finally {
-      setLoadingVehicles(false)
-      setRefreshingVehicles(false)
-      hasLoadedVehiclesRef.current = true
-    }
-  }, [])
-
-  const loadLinePaths = useCallback(async (line: string, signal?: AbortSignal) => {
-    const normalizedLine = line.trim().toUpperCase()
-    if (!normalizedLine) {
-      startTransition(() => {
-        setLinePathsResponse(null)
-      })
-      return null
-    }
-
-    try {
-      const apiResponse = await fetch(
-        `/api/line-paths?line=${encodeURIComponent(normalizedLine)}`,
+        `/api/stops/nearby?lat=${location.latitude}&lon=${location.longitude}&radius=${DEFAULT_STOPS_RADIUS_METERS}&limit=${DEFAULT_STOPS_LIMIT}`,
         { signal },
       )
 
@@ -495,9 +480,17 @@ function App() {
         throw new Error(payload?.error ?? `API responded with ${apiResponse.status}`)
       }
 
-      const payload = (await apiResponse.json()) as LinePathsResponse
+      const payload = (await apiResponse.json()) as NearbyStopsResponse
+
       startTransition(() => {
-        setLinePathsResponse(payload)
+        setFocusLocation(location)
+        setNearbyStops(payload.stops)
+        setSelectedStopCode(null)
+        setSelectedStopResponse(null)
+        setSelectedLine(null)
+        setSelectedDirectionKey(null)
+        setVehiclesResponse(null)
+        setLinePathsResponse(null)
       })
 
       return payload
@@ -506,68 +499,15 @@ function App() {
         return null
       }
 
-      startTransition(() => {
-        setLinePathsResponse(null)
-      })
       setError(
         fetchError instanceof Error
           ? fetchError.message
-          : 'Impossibile caricare il percorso della linea.',
+          : 'Impossibile caricare le fermate vicine.',
       )
 
       return null
     }
   }, [])
-
-  const loadNearbyStops = useCallback(
-    async (location: FocusLocation, signal?: AbortSignal) => {
-      try {
-        setError(null)
-
-        const apiResponse = await fetch(
-          `/api/stops/nearby?lat=${location.latitude}&lon=${location.longitude}&radius=${DEFAULT_STOPS_RADIUS_METERS}&limit=${DEFAULT_STOPS_LIMIT}`,
-          { signal },
-        )
-
-        if (!apiResponse.ok) {
-          const payload = (await apiResponse.json().catch(() => null)) as
-            | { error?: string }
-            | null
-          throw new Error(payload?.error ?? `API responded with ${apiResponse.status}`)
-        }
-
-        const payload = (await apiResponse.json()) as NearbyStopsResponse
-
-        startTransition(() => {
-          setFocusLocation(location)
-          setNearbyStops(payload.stops)
-
-          if (
-            selectedStopCode &&
-            !payload.stops.some((stop) => stop.stopCode === selectedStopCode)
-          ) {
-            setSelectedStopCode(null)
-            setSelectedStopResponse(null)
-          }
-        })
-
-        return payload
-      } catch (fetchError) {
-        if ((fetchError as Error).name === 'AbortError') {
-          return null
-        }
-
-        setError(
-          fetchError instanceof Error
-            ? fetchError.message
-            : 'Impossibile caricare le fermate vicine.',
-        )
-
-        return null
-      }
-    },
-    [selectedStopCode],
-  )
 
   const loadStopArrivals = useCallback(async (stopCode: string, signal?: AbortSignal) => {
     try {
@@ -610,31 +550,103 @@ function App() {
     }
   }, [])
 
-  const handleSearchSubmit = useCallback(
-    async (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault()
-      await loadVehicles(lineInput)
+  const loadVehicles = useCallback(async (
+    line: string,
+    options?: {
+      signal?: AbortSignal
+      refresh?: boolean
     },
-    [lineInput, loadVehicles],
-  )
+  ) => {
+    const normalizedLine = line.trim().toUpperCase()
+    if (!normalizedLine) {
+      return null
+    }
 
-  const handleSimulationTraffic = useCallback(() => {
-    const normalizedLine = lineInput.trim().toUpperCase() || 'TEST'
-    const simulatedPayload = createSimulatedResponse(normalizedLine)
+    try {
+      setError(null)
+      if (options?.refresh) {
+        setRefreshingVehicles(true)
+      } else {
+        setLoadingVehicles(true)
+      }
 
-    setError(null)
-    setLoadingVehicles(false)
-    setRefreshingVehicles(false)
-    hasLoadedVehiclesRef.current = true
+      const apiResponse = await fetch(
+        `/api/vehicles?line=${encodeURIComponent(normalizedLine)}`,
+        { signal: options?.signal },
+      )
 
-    startTransition(() => {
-      setSimulationMode(true)
-      setVehiclesResponse(simulatedPayload)
+      if (!apiResponse.ok) {
+        const payload = (await apiResponse.json().catch(() => null)) as
+          | { error?: string }
+          | null
+        throw new Error(payload?.error ?? `API responded with ${apiResponse.status}`)
+      }
+
+      const payload = (await apiResponse.json()) as LineVehiclesResponse
+      startTransition(() => {
+        setVehiclesResponse(payload)
+      })
+
+      return payload
+    } catch (fetchError) {
+      if ((fetchError as Error).name === 'AbortError') {
+        return null
+      }
+
+      setError(
+        fetchError instanceof Error
+          ? fetchError.message
+          : 'Impossibile caricare i mezzi della linea.',
+      )
+
+      return null
+    } finally {
+      setLoadingVehicles(false)
+      setRefreshingVehicles(false)
+    }
+  }, [])
+
+  const loadLinePaths = useCallback(async (line: string, signal?: AbortSignal) => {
+    const normalizedLine = line.trim().toUpperCase()
+    if (!normalizedLine) {
       setLinePathsResponse(null)
-      setSelectedLine(simulatedPayload.line)
-      setLineInput(simulatedPayload.line)
-    })
-  }, [lineInput])
+      return null
+    }
+
+    try {
+      const apiResponse = await fetch(
+        `/api/line-paths?line=${encodeURIComponent(normalizedLine)}`,
+        { signal },
+      )
+
+      if (!apiResponse.ok) {
+        const payload = (await apiResponse.json().catch(() => null)) as
+          | { error?: string }
+          | null
+        throw new Error(payload?.error ?? `API responded with ${apiResponse.status}`)
+      }
+
+      const payload = (await apiResponse.json()) as LinePathsResponse
+      startTransition(() => {
+        setLinePathsResponse(payload)
+      })
+
+      return payload
+    } catch (fetchError) {
+      if ((fetchError as Error).name === 'AbortError') {
+        return null
+      }
+
+      setLinePathsResponse(null)
+      setError(
+        fetchError instanceof Error
+          ? fetchError.message
+          : 'Impossibile caricare il percorso della linea.',
+      )
+
+      return null
+    }
+  }, [])
 
   const handleUseMyLocation = useCallback(() => {
     if (!navigator.geolocation) {
@@ -642,6 +654,7 @@ function App() {
       return
     }
 
+    setEntryMode('location')
     setLoadingLocation(true)
 
     navigator.geolocation.getCurrentPosition(
@@ -653,7 +666,7 @@ function App() {
           kind: 'user',
         }
 
-        setRecenterUserLocationRequest((value) => value + 1)
+        setRecenterFocusRequest((value) => value + 1)
         void loadNearbyStops(location).finally(() => {
           setLoadingLocation(false)
         })
@@ -681,6 +694,7 @@ function App() {
       }
 
       try {
+        setEntryMode('address')
         setSearchingAddress(true)
         setError(null)
 
@@ -717,6 +731,42 @@ function App() {
     [addressInput, loadNearbyStops],
   )
 
+  const handleStopCodeSubmit = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault()
+
+      const normalizedStopCode = stopCodeInput.trim()
+      if (!normalizedStopCode) {
+        setError('Inserisci il numero fermata.')
+        return
+      }
+
+      try {
+        setEntryMode('stop')
+        setSearchingStopCode(true)
+        const payload = await loadStopArrivals(normalizedStopCode)
+
+        if (!payload) {
+          return
+        }
+
+        startTransition(() => {
+          setNearbyStops([payload.stop])
+          setFocusLocation({
+            latitude: payload.stop.latitude,
+            longitude: payload.stop.longitude,
+            label: `${payload.stop.stopName} · fermata ${payload.stop.stopCode}`,
+            kind: 'address',
+          })
+          setRecenterFocusRequest((value) => value + 1)
+        })
+      } finally {
+        setSearchingStopCode(false)
+      }
+    },
+    [loadStopArrivals, stopCodeInput],
+  )
+
   const handleStopSelect = useCallback(
     (stopCode: string) => {
       void loadStopArrivals(stopCode)
@@ -724,94 +774,169 @@ function App() {
     [loadStopArrivals],
   )
 
-  const handleStopLineSelect = useCallback(
-    async (lineCode: string) => {
-      setError(null)
-      setLineInput(lineCode)
-      setSelectedLine(lineCode)
-      await loadVehicles(lineCode)
-    },
-    [loadVehicles],
-  )
-
-  const handleCatalogLineSelect = useCallback(
-    async (line: LineCatalogRecord) => {
-      setSelectedModeFilter(line.mode as VehicleModeFilter)
-      setError(null)
-      setSelectedLine(line.lineCode)
-      await loadVehicles(line.lineCode, { syncInput: false })
-    },
-    [loadVehicles],
-  )
-
-  const handleModeFilterChange = useCallback((mode: VehicleModeFilter) => {
-    setSelectedModeFilter(mode)
+  const handleLineSelect = useCallback((lineCode: string) => {
+    setSelectedLine(lineCode)
+    setSelectedDirectionKey(null)
   }, [])
 
-  const handleRecenterUserLocation = useCallback(() => {
-    if (focusLocation?.kind !== 'user') {
-      return
+  const handleRecentSelection = useCallback(
+    async (selection: RecentSelection) => {
+      try {
+        setError(null)
+        setEntryMode('stop')
+        setSelectedLine(selection.lineCode)
+        setSelectedDirectionKey(null)
+        setRecenterFocusRequest((value) => value + 1)
+
+        const payload = await loadStopArrivals(selection.stopCode)
+        if (!payload) {
+          return
+        }
+
+        startTransition(() => {
+          setNearbyStops([payload.stop])
+          setFocusLocation({
+            latitude: payload.stop.latitude,
+            longitude: payload.stop.longitude,
+            label: `${payload.stop.stopName} · fermata ${payload.stop.stopCode}`,
+            kind: 'address',
+          })
+        })
+      } catch {
+        setError('Impossibile ripristinare la selezione recente.')
+      }
+    },
+    [loadStopArrivals],
+  )
+
+  const handleResetFlow = useCallback(() => {
+    setSimulationMode(false)
+    setSimulationSeed(null)
+    setEntryMode(null)
+    setAddressInput('')
+    setStopCodeInput('')
+    setFocusLocation(null)
+    setNearbyStops([])
+    setSelectedStopCode(null)
+    setSelectedStopResponse(null)
+    setSelectedLine(null)
+    setSelectedDirectionKey(null)
+    setVehiclesResponse(null)
+    setLinePathsResponse(null)
+    setError(null)
+    setRecenterFocusRequest(0)
+  }, [])
+
+  const handleStartSimulation = useCallback(async () => {
+    try {
+      setError(null)
+      setSimulationMode(false)
+      setSimulationSeed(null)
+      setEntryMode('simulation')
+      setSelectedLine(SIMULATION_LINE_CODE)
+      setSelectedDirectionKey(null)
+
+      const [stopResponse, linePaths] = await Promise.all([
+        loadStopArrivals(SIMULATION_STOP_CODE),
+        loadLinePaths(SIMULATION_LINE_CODE),
+      ])
+
+      if (!stopResponse || !linePaths) {
+        return
+      }
+
+      startTransition(() => {
+        setSimulationMode(true)
+        setSimulationSeed({
+          stop: stopResponse.stop,
+          paths: linePaths.paths.filter((path) => path.lineCode === SIMULATION_LINE_CODE),
+        })
+        setNearbyStops([stopResponse.stop])
+        setFocusLocation({
+          latitude: stopResponse.stop.latitude,
+          longitude: stopResponse.stop.longitude,
+          label: 'Utente in simulazione alla fermata 240',
+          kind: 'user',
+        })
+        setSelectedStopCode(stopResponse.stop.stopCode)
+        setRecenterFocusRequest((value) => value + 1)
+      })
+    } catch {
+      setError('Impossibile avviare la simulazione.')
     }
-
-    setRecenterUserLocationRequest((value) => value + 1)
-  }, [focusLocation])
-
-  const ensureLinesCatalogLoaded = useCallback(() => {
-    if (
-      hasRequestedLinesCatalogRef.current ||
-      loadingLinesCatalog ||
-      linesCatalogResponse
-    ) {
-      return
-    }
-
-    void loadLinesCatalog()
-  }, [linesCatalogResponse, loadLinesCatalog, loadingLinesCatalog])
+  }, [loadLinePaths, loadStopArrivals])
 
   useEffect(() => {
-    if (hasRestoredLineRef.current) {
-      return
-    }
-
-    hasRestoredLineRef.current = true
-    const storedLine = window.localStorage.getItem(LAST_LINE_STORAGE_KEY)?.trim()
-    if (!storedLine) {
-      return
-    }
-
-    setLineInput(storedLine)
-    void loadVehicles(storedLine)
-  }, [loadVehicles])
+    setRecentSelections(readRecentSelections())
+  }, [])
 
   useEffect(() => {
-    if (!selectedLine) {
-      return
-    }
-
-    window.localStorage.setItem(LAST_LINE_STORAGE_KEY, selectedLine)
-  }, [selectedLine])
-
-  useEffect(() => {
-    if (!selectedLine || simulationMode) {
-      setLinePathsResponse(null)
-      return
-    }
-
-    const abortController = new AbortController()
-    void loadLinePaths(selectedLine, abortController.signal)
+    const intervalId = window.setInterval(() => {
+      setNowTickMs(Date.now())
+    }, 1_000)
 
     return () => {
-      abortController.abort()
+      window.clearInterval(intervalId)
     }
-  }, [loadLinePaths, selectedLine, simulationMode])
+  }, [])
 
   useEffect(() => {
-    if (!selectedLine || simulationMode) {
+    if (!simulationMode || !simulationSeed) {
+      return
+    }
+
+    const updateSimulation = () => {
+      const now = new Date()
+      const simulatedArrivals = buildSimulatedArrivals(
+        simulationSeed.stop,
+        simulationSeed.paths,
+        now,
+      )
+      const simulatedVehicles = buildSimulatedVehicles(simulationSeed.paths, now)
+
+      startTransition(() => {
+        setSelectedStopResponse({
+          fetchedAt: now.toISOString(),
+          feedTimestamp: now.toISOString(),
+          stale: false,
+          warnings: ['Simulazione attiva: dati live generati localmente.'],
+          stop: simulationSeed.stop,
+          relatedStops: [],
+          arrivals: simulatedArrivals,
+        })
+        setVehiclesResponse({
+          fetchedAt: now.toISOString(),
+          feedTimestamp: now.toISOString(),
+          stale: false,
+          warnings: ['Simulazione attiva: mezzi in movimento generati localmente.'],
+          line: SIMULATION_LINE_CODE,
+          vehicles: simulatedVehicles,
+        })
+        setLinePathsResponse({
+          fetchedAt: now.toISOString(),
+          line: SIMULATION_LINE_CODE,
+          paths: simulationSeed.paths,
+        })
+      })
+    }
+
+    updateSimulation()
+    const intervalId = window.setInterval(updateSimulation, SIMULATION_UPDATE_INTERVAL_MS)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [simulationMode, simulationSeed])
+
+  useEffect(() => {
+    if (simulationMode) {
       return
     }
 
     const intervalId = window.setInterval(() => {
-      void loadVehicles(selectedLine)
+      if (selectedLine) {
+        void loadVehicles(selectedLine, { refresh: true })
+      }
     }, POLL_INTERVAL_MS)
 
     return () => {
@@ -820,99 +945,23 @@ function App() {
   }, [loadVehicles, selectedLine, simulationMode])
 
   useEffect(() => {
-    const displayModeQuery = window.matchMedia('(display-mode: standalone)')
-
-    const handleDisplayModeChange = (event: MediaQueryListEvent) => {
-      setIsStandalone(event.matches)
-    }
-
-    const handleBeforeInstallPrompt = (event: Event) => {
-      const installEvent = event as BeforeInstallPromptEvent
-      installEvent.preventDefault()
-      setInstallPromptEvent(installEvent)
-    }
-
-    const handleAppInstalled = () => {
-      setInstallPromptEvent(null)
-      setInstallingApp(false)
-      setIsStandalone(true)
-    }
-
-    setIsStandalone(displayModeQuery.matches)
-
-    displayModeQuery.addEventListener('change', handleDisplayModeChange)
-    window.addEventListener(
-      'beforeinstallprompt',
-      handleBeforeInstallPrompt as EventListener,
-    )
-    window.addEventListener('appinstalled', handleAppInstalled)
-
-    return () => {
-      displayModeQuery.removeEventListener('change', handleDisplayModeChange)
-      window.removeEventListener(
-        'beforeinstallprompt',
-        handleBeforeInstallPrompt as EventListener,
-      )
-      window.removeEventListener('appinstalled', handleAppInstalled)
-    }
-  }, [])
-
-  const handleInstallApp = useCallback(async () => {
-    if (!installPromptEvent) {
+    if (simulationMode) {
       return
     }
 
-    try {
-      setInstallingApp(true)
-      await installPromptEvent.prompt()
-      await installPromptEvent.userChoice
-    } finally {
-      setInstallingApp(false)
-      setInstallPromptEvent(null)
+    if (!selectedStopCode) {
+      return
     }
-  }, [installPromptEvent])
 
-  const visibleVehicles = useMemo(
-    () => vehiclesResponse?.vehicles ?? [],
-    [vehiclesResponse],
-  )
-  const availableLines = useMemo(
-    () => linesCatalogResponse?.lines ?? [],
-    [linesCatalogResponse],
-  )
-  const availableModeFilters = useMemo(() => {
-    const modes = new Set<VehicleModeFilter>(
-      availableLines
-        .map((line) => line.mode)
-        .filter((mode): mode is Exclude<VehicleModeFilter, 'all'> => mode !== 'other'),
-    )
+    const intervalId = window.setInterval(() => {
+      void loadStopArrivals(selectedStopCode)
+    }, POLL_INTERVAL_MS)
 
-    return MODE_FILTER_ORDER.filter((mode) => mode === 'all' || modes.has(mode))
-  }, [availableLines])
-  const filteredLineOptions = useMemo(() => {
-    const normalizedQuery = lineInput.trim().toUpperCase()
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [loadStopArrivals, selectedStopCode])
 
-    return availableLines
-      .filter((line) => selectedModeFilter === 'all' || line.mode === selectedModeFilter)
-      .filter((line) =>
-        normalizedQuery.length === 0
-          ? true
-          : line.lineCode.toUpperCase().includes(normalizedQuery),
-      )
-      .sort(compareLineCatalogRecords)
-  }, [availableLines, lineInput, selectedModeFilter])
-  const visibleLinePaths = useMemo(
-    () => linePathsResponse?.paths ?? [],
-    [linePathsResponse],
-  )
-  const selectedModesSummary = useMemo(
-    () => buildModesSummary(visibleVehicles),
-    [visibleVehicles],
-  )
-  const headsignSummary = useMemo(
-    () => buildHeadsignSummary(visibleVehicles),
-    [visibleVehicles],
-  )
   const selectedStop = useMemo(() => {
     if (selectedStopResponse) {
       return selectedStopResponse.stop
@@ -924,304 +973,530 @@ function App() {
 
     return nearbyStops.find((stop) => stop.stopCode === selectedStopCode) ?? null
   }, [nearbyStops, selectedStopCode, selectedStopResponse])
+
   const selectedStopArrivals = useMemo(
-    () => selectedStopResponse?.arrivals.slice(0, 6) ?? [],
+    () => selectedStopResponse?.arrivals.slice(0, 8) ?? [],
     [selectedStopResponse],
   )
-  const selectedStopServicesSummary = useMemo(
-    () => buildStopServicesSummary(selectedStop?.services ?? []),
-    [selectedStop],
+
+  const stopWideArrivals = useMemo(
+    () => selectedStopResponse?.arrivals.slice(0, 12) ?? [],
+    [selectedStopResponse],
   )
-  const selectedStopServiceLinks = useMemo(
-    () => buildSelectableStopServices(selectedStop?.services ?? []),
-    [selectedStop],
+
+  const lineChoices = useMemo(
+    () => buildLineChoices(selectedStop?.services ?? [], selectedStopArrivals),
+    [selectedStop, selectedStopArrivals],
   )
-  const activeWarnings = useMemo(
-    () => mergeWarnings(vehiclesResponse?.warnings, selectedStopResponse?.warnings),
-    [selectedStopResponse?.warnings, vehiclesResponse?.warnings],
+
+  const activeLineChoice = useMemo(
+    () => lineChoices.find((choice) => choice.service.lineCode === selectedLine) ?? null,
+    [lineChoices, selectedLine],
+  )
+
+  const upcomingStopLines = useMemo(() => {
+    const seenLines = new Set<string>()
+
+    return stopWideArrivals.filter((arrival) => {
+      if (seenLines.has(arrival.lineCode)) {
+        return false
+      }
+
+      seenLines.add(arrival.lineCode)
+      return true
+    }).slice(0, 6)
+  }, [stopWideArrivals])
+
+  useEffect(() => {
+    if (simulationMode) {
+      return
+    }
+
+    if (selectedLine) {
+      const abortController = new AbortController()
+      void loadVehicles(selectedLine, { signal: abortController.signal })
+      void loadLinePaths(selectedLine, abortController.signal)
+
+      return () => {
+        abortController.abort()
+      }
+    }
+
+    if (!selectedStop || upcomingStopLines.length === 0) {
+      setVehiclesResponse(null)
+      setLinePathsResponse(null)
+      return
+    }
+
+    const abortController = new AbortController()
+    const previewLineCodes = Array.from(
+      new Set(upcomingStopLines.map((arrival) => arrival.lineCode)),
+    ).slice(0, 6)
+
+    void Promise.all([
+      Promise.all(
+        previewLineCodes.map(async (lineCode) => {
+          const apiResponse = await fetch(
+            `/api/vehicles?line=${encodeURIComponent(lineCode)}`,
+            { signal: abortController.signal },
+          )
+          if (!apiResponse.ok) {
+            return null
+          }
+
+          return (await apiResponse.json()) as LineVehiclesResponse
+        }),
+      ),
+      Promise.all(
+        previewLineCodes.map(async (lineCode) => {
+          const apiResponse = await fetch(
+            `/api/line-paths?line=${encodeURIComponent(lineCode)}`,
+            { signal: abortController.signal },
+          )
+          if (!apiResponse.ok) {
+            return null
+          }
+
+          return (await apiResponse.json()) as LinePathsResponse
+        }),
+      ),
+    ])
+      .then(([vehicleResponses, pathResponses]) => {
+        if (abortController.signal.aborted) {
+          return
+        }
+
+        startTransition(() => {
+          setVehiclesResponse({
+            fetchedAt: new Date().toISOString(),
+            feedTimestamp:
+              vehicleResponses.find((response) => response?.feedTimestamp)?.feedTimestamp ?? null,
+            stale: false,
+            warnings: [],
+            line: 'preview',
+            vehicles: vehicleResponses.flatMap((response) => response?.vehicles ?? []),
+          })
+          setLinePathsResponse({
+            fetchedAt: new Date().toISOString(),
+            line: 'preview',
+            paths: pathResponses.flatMap((response) => response?.paths ?? []),
+          })
+        })
+      })
+      .catch((fetchError) => {
+        if ((fetchError as Error).name === 'AbortError') {
+          return
+        }
+
+        setError(
+          fetchError instanceof Error
+            ? fetchError.message
+            : 'Impossibile caricare le linee in preview per la fermata.',
+        )
+      })
+
+    return () => {
+      abortController.abort()
+    }
+  }, [loadLinePaths, loadVehicles, selectedLine, selectedStop, simulationMode, upcomingStopLines])
+
+  const selectedLineArrivals = useMemo(() => {
+    if (!selectedLine) {
+      return []
+    }
+
+    const filteredArrivals = selectedStopArrivals.filter(
+      (arrival) => arrival.lineCode === selectedLine,
+    )
+
+    if (!selectedDirectionKey) {
+      return filteredArrivals.slice(0, 4)
+    }
+
+    return filteredArrivals
+      .filter(
+        (arrival) =>
+          normalizeDirectionKey(arrival.headsign ?? arrival.routeName) === selectedDirectionKey,
+      )
+      .slice(0, 4)
+  }, [selectedDirectionKey, selectedLine, selectedStopArrivals])
+
+  const directionChoices = useMemo<DirectionChoice[]>(() => {
+    if (!selectedLine) {
+      return []
+    }
+
+    const byKey = new Map<string, DirectionChoice>()
+
+    ;(linePathsResponse?.paths ?? [])
+      .filter((path) => path.lineCode === selectedLine)
+      .forEach((path) => {
+        const label = formatDestinationLabel(path.headsign ?? selectedLine)
+        const key = normalizeDirectionKey(path.headsign ?? selectedLine)
+        if (!byKey.has(key)) {
+          byKey.set(key, { key, label })
+        }
+      })
+
+    selectedStopArrivals
+      .filter((arrival) => arrival.lineCode === selectedLine)
+      .forEach((arrival) => {
+        const label = formatDestinationLabel(arrival.headsign ?? arrival.routeName)
+        const key = normalizeDirectionKey(arrival.headsign ?? arrival.routeName)
+        if (!byKey.has(key)) {
+          byKey.set(key, { key, label })
+        }
+      })
+
+    return Array.from(byKey.values())
+  }, [linePathsResponse?.paths, selectedLine, selectedStopArrivals])
+
+  useEffect(() => {
+    if (directionChoices.length === 0) {
+      setSelectedDirectionKey(null)
+      return
+    }
+
+    if (
+      selectedDirectionKey &&
+      directionChoices.some((choice) => choice.key === selectedDirectionKey)
+    ) {
+      return
+    }
+
+    setSelectedDirectionKey(directionChoices[0]?.key ?? null)
+  }, [directionChoices, selectedDirectionKey])
+
+  const visibleVehicles = useMemo(() => {
+    const vehicles = vehiclesResponse?.vehicles ?? []
+    if (!selectedDirectionKey) {
+      return vehicles
+    }
+
+    return vehicles.filter(
+      (vehicle) =>
+        normalizeDirectionKey(vehicle.headsign ?? vehicle.routeName) === selectedDirectionKey,
+    )
+  }, [selectedDirectionKey, vehiclesResponse])
+
+  const visibleLinePaths = useMemo(() => {
+    const paths = linePathsResponse?.paths ?? []
+    if (!selectedDirectionKey) {
+      return paths
+    }
+
+    return paths.filter(
+      (path) => normalizeDirectionKey(path.headsign ?? path.lineCode) === selectedDirectionKey,
+    )
+  }, [linePathsResponse, selectedDirectionKey])
+
+  const activeDirectionChoice = useMemo(
+    () => directionChoices.find((choice) => choice.key === selectedDirectionKey) ?? null,
+    [directionChoices, selectedDirectionKey],
+  )
+
+  const directionActivity = useMemo(
+    () =>
+      directionChoices.map((choice) => {
+        const arrivalsCount = selectedStopArrivals.filter(
+          (arrival) =>
+            arrival.lineCode === selectedLine &&
+            normalizeDirectionKey(arrival.headsign ?? arrival.routeName) === choice.key,
+        ).length
+        const vehiclesCount = (vehiclesResponse?.vehicles ?? []).filter(
+          (vehicle) =>
+            normalizeDirectionKey(vehicle.headsign ?? vehicle.routeName) === choice.key,
+        ).length
+
+        return {
+          ...choice,
+          arrivalsCount,
+          vehiclesCount,
+        }
+      }).filter((choice) => choice.arrivalsCount > 0 || choice.vehiclesCount > 0),
+    [directionChoices, selectedLine, selectedStopArrivals, vehiclesResponse?.vehicles],
+  )
+
+  const lastUpdatedLabel = useMemo(
+    () =>
+      formatUpdatedAgo(
+        selectedStopResponse?.feedTimestamp ?? selectedStopResponse?.fetchedAt ?? null,
+        nowTickMs,
+      ),
+    [nowTickMs, selectedStopResponse?.feedTimestamp, selectedStopResponse?.fetchedAt],
   )
 
   useEffect(() => {
+    if (!selectedStop || !selectedLine) {
+      return
+    }
+
+    const nextEntry: RecentSelection = {
+      stopCode: selectedStop.stopCode,
+      stopName: selectedStop.stopName,
+      lineCode: selectedLine,
+      latitude: selectedStop.latitude,
+      longitude: selectedStop.longitude,
+      savedAt: new Date().toISOString(),
+    }
+
+    setRecentSelections((currentSelections) => {
+      const dedupedSelections = currentSelections.filter(
+        (item) =>
+          !(item.stopCode === nextEntry.stopCode && item.lineCode === nextEntry.lineCode),
+      )
+      const nextSelections = [nextEntry, ...dedupedSelections].slice(0, MAX_RECENT_SELECTIONS)
+      writeRecentSelections(nextSelections)
+      return nextSelections
+    })
+  }, [selectedLine, selectedStop])
+
+  const summaryMessage = useMemo(() => {
+    if (simulationMode) {
+      return 'Simulazione attiva: fermata 240, linea 4, due direzioni e mezzi in movimento.'
+    }
+
+    if (!entryMode) {
+      return 'Scegli come partire: posizione, numero fermata o indirizzo.'
+    }
+
+    if (!selectedStop) {
+      if (entryMode === 'stop') {
+        return 'Inserisci una palina GTT per andare subito alla fermata.'
+      }
+
+      return 'Scegli una fermata vicina per vedere i mezzi utili in attesa.'
+    }
+
     if (!selectedLine) {
-      return
+      return `Fermata ${selectedStop.stopCode} selezionata. Ora scegli una linea utile.`
     }
 
-    const matchingLine = availableLines.find(
-      (line) => line.lineCode.toUpperCase() === selectedLine.toUpperCase(),
-    )
-    if (!matchingLine || matchingLine.mode === 'other') {
-      return
+    if (loadingVehicles) {
+      return `Caricamento mezzi live della linea ${selectedLine}...`
     }
 
-    setSelectedModeFilter(matchingLine.mode as VehicleModeFilter)
-  }, [availableLines, selectedLine])
+    return `${visibleVehicles.length} mezzi live trovati per la linea ${selectedLine}.`
+  }, [entryMode, loadingVehicles, selectedLine, selectedStop, simulationMode, visibleVehicles.length])
 
   return (
-    <div className="app-shell">
-      <section className="primary-stage">
-        <header className="hero-card control-card">
-          <div className="hero-copy">
-            <p className="eyebrow">Torino Line Radar</p>
-            <h1>Linea, posizione e fermate in una sola vista.</h1>
-            <p className="hero-text">
-              Cerca una linea GTT, localizzati o trova un indirizzo, poi clicca una
-              fermata per vedere gli arrivi previsti.
-            </p>
+    <div className="app-shell simplified-shell">
+      <section className="mobile-layout">
+        <header className="mobile-card hero-mobile-card">
+          <div className="hero-copy compact-hero-copy">
+            <h1>GTT Radar</h1>
           </div>
 
-          <div className="control-section">
-            <p className="eyebrow">Cerca mezzo</p>
+          <div className="summary-strip">
+            <span className="mode-badge">{summaryMessage}</span>
+            {selectedStop ? (
+              <span className="mode-badge">Fermata {selectedStop.stopCode}</span>
+            ) : null}
+            {selectedLine ? <span className="mode-badge">Linea {selectedLine}</span> : null}
+            {simulationMode ? <span className="mode-badge">Demo attiva</span> : null}
+          </div>
 
-            <form className="simple-search-form" onSubmit={handleSearchSubmit}>
-              <div className="line-search-row">
-                <input
-                  className="line-search-input"
-                  type="search"
-                  value={lineInput}
-                  aria-label="Inserisci una linea"
-                  placeholder="Es. 4, 46, M1"
-                  onFocus={ensureLinesCatalogLoaded}
-                  onChange={(event) => setLineInput(event.target.value.toUpperCase())}
-                />
-
-                <button className="refresh-button" type="submit">
-                  {loadingVehicles || refreshingVehicles ? 'Caricamento...' : 'Mostra'}
-                </button>
+          <div className="entry-grid">
+            {recentSelections.length > 0 ? (
+              <div className="entry-form-card recent-selection-card">
+                <strong>Riprendi da una selezione recente</strong>
+                <span>Fino a 3 combinazioni salvate in cache sul dispositivo.</span>
+                <div className="recent-selection-grid">
+                  {recentSelections.map((selection) => (
+                    <button
+                      key={`${selection.stopCode}:${selection.lineCode}`}
+                      className="line-choice-button recent-selection-button"
+                      type="button"
+                      onClick={() => void handleRecentSelection(selection)}
+                    >
+                      <strong>Linea {selection.lineCode}</strong>
+                      <span>{selection.stopName}</span>
+                      <span>Fermata {selection.stopCode}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
+            ) : null}
+
+            <button
+              className={`entry-button${entryMode === 'location' ? ' is-active' : ''}`}
+              type="button"
+              onClick={handleUseMyLocation}
+              disabled={loadingLocation}
+            >
+              <strong>{loadingLocation ? 'Localizzo...' : 'Usa la mia posizione'}</strong>
+              <span>Ti mostra sulla mappa e carica le fermate vicine.</span>
+            </button>
+
+            <button
+              className={`entry-button${entryMode === 'simulation' ? ' is-active' : ''}`}
+              type="button"
+              onClick={() => {
+                void handleStartSimulation()
+              }}
+            >
+              <strong>Modalita simulazione</strong>
+              <span>Utente alla fermata 240 con linea 4 e mezzi simulati in movimento.</span>
+            </button>
+
+            <form
+              className={`entry-form-card${entryMode === 'stop' ? ' is-active' : ''}`}
+              onSubmit={handleStopCodeSubmit}
+            >
+              <label className="search-field">
+                <span>Numero fermata</span>
+                <input
+                  type="search"
+                  inputMode="numeric"
+                  value={stopCodeInput}
+                  placeholder="Es. 1234"
+                  onChange={(event) => setStopCodeInput(event.target.value)}
+                />
+              </label>
+
+              <button className="secondary-button" type="submit" disabled={searchingStopCode}>
+                {searchingStopCode ? 'Cerco...' : 'Vai alla fermata'}
+              </button>
+            </form>
+
+            <form
+              className={`entry-form-card${entryMode === 'address' ? ' is-active' : ''}`}
+              onSubmit={handleAddressSubmit}
+            >
+              <label className="search-field">
+                <span>Indirizzo</span>
+                <input
+                  type="search"
+                  value={addressInput}
+                  placeholder="Es. Via Po 17"
+                  onChange={(event) => setAddressInput(event.target.value)}
+                />
+              </label>
+
+              <button className="secondary-button" type="submit" disabled={searchingAddress}>
+                {searchingAddress ? 'Cerco...' : 'Trova fermate vicine'}
+              </button>
             </form>
           </div>
 
-          <div className="selection-box">
-            <div className="selection-head">
-              <p className="eyebrow">Tipo mezzo</p>
-              {selectedModeFilter !== 'all' ? (
-                <span className="mode-badge">
-                  {MODE_FILTER_LABELS[selectedModeFilter]}
-                </span>
-              ) : null}
-            </div>
-
-            <div className="mode-filter-grid">
-              {availableModeFilters.map((mode) => (
-                <button
-                  key={mode}
-                  className={`mode-filter-button${
-                    selectedModeFilter === mode ? ' is-active' : ''
-                  }`}
-                  type="button"
-                  onClick={() => handleModeFilterChange(mode)}
-                >
-                  {MODE_FILTER_LABELS[mode]}
-                </button>
-              ))}
-            </div>
-
-            <div className="line-picker-head">
-              <p className="helper-copy">
-                {selectedModeFilter === 'all'
-                  ? 'Tutte le linee disponibili'
-                  : `Linee ${MODE_FILTER_LABELS[selectedModeFilter].toLowerCase()} disponibili`}
-              </p>
-              <span className="mode-badge">{filteredLineOptions.length}</span>
-            </div>
-
-            {loadingLinesCatalog ? (
-              <p className="empty-state">Caricamento catalogo linee...</p>
-            ) : filteredLineOptions.length > 0 ? (
-              <div className="line-options-grid">
-                {filteredLineOptions.map((line) => (
-                  <button
-                    key={`${line.mode}:${line.lineCode}`}
-                    className={`line-option-button${
-                      selectedLine?.toUpperCase() === line.lineCode.toUpperCase()
-                        ? ' is-active'
-                        : ''
-                    }`}
-                    type="button"
-                    style={{
-                      backgroundColor:
-                        selectedLine?.toUpperCase() === line.lineCode.toUpperCase()
-                          ? line.routeColor ?? undefined
-                          : undefined,
-                      color:
-                        selectedLine?.toUpperCase() === line.lineCode.toUpperCase()
-                          ? line.routeTextColor ?? undefined
-                          : undefined,
-                    }}
-                    onClick={() => {
-                      void handleCatalogLineSelect(line)
-                    }}
-                  >
-                    <strong>{line.lineCode}</strong>
-                    <span>{line.modeLabel}</span>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <p className="empty-state">
-                Nessuna linea compatibile con il filtro selezionato.
-              </p>
-            )}
-          </div>
-
-          <div className="selection-box">
-            <div className="selection-head">
-              <p className="eyebrow">Localizzazione</p>
-            </div>
-
-            <div className="location-options-grid">
-              <div className="option-card">
-                <div className="option-card-head">
-                  <p className="eyebrow">Usa localizzazione</p>
-                </div>
-
-                <div className="location-actions">
-                  <button
-                    className={`secondary-button location-button${
-                      focusLocation?.kind === 'user' ? ' is-active' : ''
-                    }`}
-                    type="button"
-                    onClick={handleUseMyLocation}
-                    disabled={loadingLocation}
-                  >
-                    <span
-                      className={`location-signal${
-                        focusLocation?.kind === 'user' ? ' is-active' : ''
-                      }${loadingLocation ? ' is-loading' : ''}`}
-                      aria-hidden="true"
-                    ></span>
-                    {loadingLocation ? 'Localizzo...' : 'Usa la mia posizione'}
-                  </button>
-
-                  {focusLocation?.kind === 'user' ? (
-                    <button
-                      className="secondary-button compact-button"
-                      type="button"
-                      onClick={handleRecenterUserLocation}
-                    >
-                      Torna alla mia posizione
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-
-              <form className="address-form option-card" onSubmit={handleAddressSubmit}>
-                <div className="option-card-head">
-                  <p className="eyebrow">Ricerca indirizzo</p>
-                </div>
-
-                <label className="search-field">
-                  <span>Indirizzo</span>
-                  <input
-                    type="search"
-                    value={addressInput}
-                    placeholder="Es. Via Po 17"
-                    onChange={(event) => setAddressInput(event.target.value)}
-                  />
-                </label>
-
-                <button
-                  className="secondary-button compact-button"
-                  type="submit"
-                  disabled={searchingAddress}
-                >
-                  {searchingAddress ? 'Cerco...' : 'Cerca indirizzo'}
-                </button>
-
-                {focusLocation?.kind === 'address' ? (
-                  <p className="option-caption">{focusLocation.label}</p>
-                ) : null}
-              </form>
-            </div>
-
-            <label className="switch-row">
-              <span className="switch-copy">
-                <strong>Mostra fermate</strong>
-                <span>{showStops ? 'Attivo' : 'Disattivato'}</span>
-              </span>
-              <input
-                className="switch-input"
-                type="checkbox"
-                checked={showStops}
-                onChange={(event) => setShowStops(event.target.checked)}
-              />
-              <span className="switch-track" aria-hidden="true">
-                <span className="switch-thumb"></span>
-              </span>
-            </label>
-
-            <div className="simple-status-row">
-              <span className="line-badge">
-                {selectedLine ? `Linea ${selectedLine}` : 'Nessuna linea'}
-              </span>
-              <span className="mode-badge">{visibleVehicles.length} mezzi live</span>
-              {selectedLine ? <span className="mode-badge">{selectedModesSummary}</span> : null}
-              {simulationMode ? <span className="mode-badge">Test traffico</span> : null}
-              {focusLocation?.kind === 'address' ? (
-                <span className="mode-badge">Indirizzo attivo</span>
-              ) : null}
-              {nearbyStops.length > 0 ? (
-                <span className="mode-badge">{nearbyStops.length} fermate caricate</span>
-              ) : null}
-              {isStandalone ? <span className="mode-badge">PWA installata</span> : null}
-            </div>
-
-            {installPromptEvent && !isStandalone ? (
+          <div className="flow-actions">
+            <button className="ghost-button" type="button" onClick={handleResetFlow}>
+              Riparti da zero
+            </button>
+            {focusLocation?.kind === 'user' ? (
               <button
-                className="secondary-button compact-button install-button"
+                className="ghost-button"
                 type="button"
-                onClick={() => {
-                  void handleInstallApp()
-                }}
-                disabled={installingApp}
+                onClick={() => setRecenterFocusRequest((value) => value + 1)}
               >
-                {installingApp ? 'Installazione...' : 'Installa app'}
+                Torna alla mia posizione
               </button>
             ) : null}
           </div>
 
-          <div className="selection-box stop-detail-box">
-            <div className="selection-head">
-              <p className="eyebrow">Fermata selezionata</p>
-              {selectedStop ? (
-                <span className="mode-badge">Palina {selectedStop.stopCode}</span>
+          {error ? <p className="error-box">{error}</p> : null}
+        </header>
+
+        <section className="mobile-card mobile-map-card">
+          <div className="map-panel-header compact-map-header">
+            <div>
+              <p className="map-label">Mappa attesa</p>
+              <h2>
+                {selectedLine
+                  ? `Linea ${selectedLine} verso la fermata`
+                  : selectedStop
+                    ? `Fermata ${selectedStop.stopCode}`
+                    : 'Scegli come vuoi partire'}
+              </h2>
+              {selectedStop && upcomingStopLines.length > 0 ? (
+                <div className="map-line-strip">
+                  {upcomingStopLines.map((arrival) => (
+                    <button
+                      key={`${arrival.lineCode}:${arrival.tripId}`}
+                      className={`vehicle-line-pill map-line-pill-button${
+                        selectedLine === arrival.lineCode ? ' is-active' : ''
+                      }`}
+                      type="button"
+                      onClick={() => {
+                        handleLineSelect(arrival.lineCode)
+                        setSelectedDirectionKey(
+                          normalizeDirectionKey(arrival.headsign ?? arrival.routeName),
+                        )
+                      }}
+                    >
+                      {arrival.lineCode}
+                    </button>
+                  ))}
+                </div>
               ) : null}
             </div>
+          </div>
 
+          <div className="map-frame mobile-map-frame">
             {selectedStop ? (
-              <>
-                <h3 className="stop-title">{selectedStop.stopName}</h3>
-                <p className="helper-copy">
-                  {selectedStopServicesSummary} · {formatDistance(selectedStop.distanceMeters)}
-                </p>
+              <div className="map-update-overlay">
+                <span className="live-update-badge">
+                  <span className="live-update-dot" aria-hidden="true"></span>
+                  Ultimo aggiornamento {lastUpdatedLabel}
+                </span>
+              </div>
+            ) : null}
+            <MapView
+              lineLabel={selectedLine}
+              vehicleMarkers={visibleVehicles}
+              linePaths={visibleLinePaths}
+              focusLocation={focusLocation}
+              nearbyStops={nearbyStops}
+              showStops={nearbyStops.length > 0}
+              selectedStopCode={selectedStopCode}
+              selectedStop={selectedStop}
+              activeLine={selectedLine}
+              selectedStopArrivals={selectedStopArrivals}
+              loadingStopArrivals={loadingStopArrivals}
+              recenterFocusRequest={recenterFocusRequest}
+              onSelectStop={handleStopSelect}
+              onSelectLine={handleLineSelect}
+            />
+          </div>
 
-                {selectedStopServiceLinks.length > 0 ? (
-                  <div className="stop-service-grid">
-                    {selectedStopServiceLinks.map((service) => (
-                      <button
-                        key={`${selectedStop.stopCode}:${service.lineCode}`}
-                        className={`stop-service-button${
-                          selectedLine === service.lineCode ? ' is-active' : ''
-                        }`}
-                        type="button"
-                        onClick={() => {
-                          void handleStopLineSelect(service.lineCode)
-                        }}
-                      >
-                        <strong>{service.lineCode}</strong>
-                        <span>{service.modeLabel}</span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
+          {selectedStop ? (
+            <div className="map-wait-panel">
+              <div className="selected-stop-banner wait-banner">
+                <strong>
+                  {selectedLine
+                    ? `Linea ${selectedLine}${activeLineChoice ? ` · ${activeLineChoice.service.modeLabel}` : ''}`
+                    : `Fermata ${selectedStop.stopCode}`}
+                </strong>
+                <span>
+                  {`${selectedStop.stopName} · fermata ${selectedStop.stopCode}`}
+                  {selectedLine && activeDirectionChoice ? ` · ${activeDirectionChoice.label}` : ''}
+                </span>
+              </div>
 
-                {loadingStopArrivals ? (
-                  <p className="empty-state">Caricamento arrivi previsti...</p>
-                ) : selectedStopArrivals.length > 0 ? (
-                  <ul className="arrival-list compact-arrival-list">
-                    {selectedStopArrivals.map((arrival: ArrivalRecord) => (
-                      <li key={`${arrival.tripId}:${arrival.predictedArrival}`}>
-                        <article className="arrival-row compact-arrival-row">
+              <div className="map-detail-section">
+                <div className="section-head">
+                  <p className="eyebrow">Tutti i passaggi della fermata</p>
+                  <span className="live-update-badge">
+                    <span className="live-update-dot" aria-hidden="true"></span>
+                    Ultimo aggiornamento {lastUpdatedLabel}
+                  </span>
+                </div>
+                {stopWideArrivals.length > 0 ? (
+                  <ul className="arrival-list mobile-arrival-list">
+                    {stopWideArrivals.map((arrival) => (
+                      <li key={`stop:${arrival.tripId}:${arrival.predictedArrival}`}>
+                        <button
+                          className={`arrival-row mobile-arrival-row arrival-select-button${
+                            selectedLine === arrival.lineCode ? ' is-active' : ''
+                          }`}
+                          type="button"
+                          onClick={() => {
+                            handleLineSelect(arrival.lineCode)
+                            setSelectedDirectionKey(
+                              normalizeDirectionKey(arrival.headsign ?? arrival.routeName),
+                            )
+                          }}
+                        >
                           <span
                             className="vehicle-line-pill"
                             style={{
@@ -1236,116 +1511,115 @@ function App() {
                             <strong>
                               {formatDestinationLabel(arrival.headsign ?? arrival.routeName)}
                             </strong>
-                            <span>
-                              {arrival.modeLabel} ·{' '}
-                              {arrival.realtime ? 'realtime' : 'orario programmato'}
-                            </span>
+                            <span>{formatTime(arrival.predictedArrival)}</span>
                           </span>
 
                           <span className="arrival-meta">
                             <strong>{formatMinutesUntil(arrival.minutesUntil)}</strong>
-                            <span className="delay-badge">
-                              {formatTime(arrival.predictedArrival)}
-                            </span>
                           </span>
-                        </article>
+                        </button>
                       </li>
                     ))}
                   </ul>
                 ) : (
-                  <p className="empty-state">
-                    Nessun arrivo previsto disponibile per questa fermata.
-                  </p>
+                  <p className="empty-state">Nessun passaggio disponibile per questa fermata.</p>
                 )}
-              </>
-            ) : (
-              <p className="empty-state">
-                Attiva posizione o indirizzo, poi clicca una fermata sulla mappa per vedere
-                i mezzi previsti.
-              </p>
-            )}
-          </div>
+              </div>
 
-          <p className="helper-copy">
-            {loadingVehicles
-              ? 'Caricamento mezzi live in corso.'
-              : simulationMode
-                ? `${visibleVehicles.length} mezzi simulati. Premi di nuovo TEST simulazione per rigenerare il traffico casuale.`
-              : selectedLine
-                ? `${visibleVehicles.length} mezzi trovati. ${headsignSummary}. Ultimo feed: ${formatTime(
-                    vehiclesResponse?.feedTimestamp ?? null,
-                  )}.`
-                : 'Scrivi una linea GTT per visualizzare i mezzi attivi sulla mappa.'}
-          </p>
+              {selectedLine ? (
+                <div className="map-detail-section">
+                  <div className="section-head">
+                    <p className="eyebrow">Arrivi in ordine di attesa</p>
+                    <span className="live-update-badge">
+                      <span className="live-update-dot" aria-hidden="true"></span>
+                      Ultimo aggiornamento {lastUpdatedLabel}
+                    </span>
+                  </div>
+                  {selectedLineArrivals.length > 0 ? (
+                    <ul className="arrival-list mobile-arrival-list">
+                      {selectedLineArrivals.map((arrival) => (
+                        <li key={`${arrival.tripId}:${arrival.predictedArrival}`}>
+                          <article className="arrival-row mobile-arrival-row">
+                            <span
+                              className="vehicle-line-pill"
+                              style={{
+                                backgroundColor: arrival.routeColor ?? undefined,
+                                color: arrival.routeTextColor ?? undefined,
+                              }}
+                            >
+                              {arrival.lineCode}
+                            </span>
 
-          <div className="simulation-zone">
-            <button
-              className="secondary-button simulation-button"
-              type="button"
-              onClick={handleSimulationTraffic}
-            >
-              Test simulazione
-            </button>
-          </div>
+                            <span className="vehicle-row-copy">
+                              <strong>
+                                {formatDestinationLabel(arrival.headsign ?? arrival.routeName)}
+                              </strong>
+                              <span>{formatTime(arrival.predictedArrival)}</span>
+                            </span>
 
-          {error ? <p className="error-box">{error}</p> : null}
+                            <span className="arrival-meta">
+                              <strong>{formatMinutesUntil(arrival.minutesUntil)}</strong>
+                            </span>
+                          </article>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="empty-state">
+                      Nessun arrivo imminente disponibile per la linea selezionata.
+                    </p>
+                  )}
+                </div>
+              ) : null}
 
-          {activeWarnings.length ? (
-            <div className="warning-box">
-              {activeWarnings.map((warning) => (
-                <p key={warning}>{warning}</p>
-              ))}
+              {selectedLine && directionActivity.length > 1 ? (
+                <div className="map-detail-section">
+                  <p className="eyebrow">Direzione selezionata</p>
+                  <div className="line-choice-grid direction-switch-grid">
+                    {directionActivity.map((choice) => (
+                      <button
+                        key={choice.key}
+                        className={`line-choice-button${
+                          selectedDirectionKey === choice.key ? ' is-active' : ''
+                        }`}
+                        type="button"
+                        onClick={() => setSelectedDirectionKey(choice.key)}
+                      >
+                        <strong>Direzione</strong>
+                        <span>{choice.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {selectedLine && directionActivity.length > 0 ? (
+                <div className="map-detail-section">
+                  <p className="eyebrow">Direzioni attive adesso</p>
+                  <div className="direction-activity-list">
+                    {directionActivity.map((choice) => (
+                      <button
+                        key={choice.key}
+                        className={`direction-activity-card${
+                          selectedDirectionKey === choice.key ? ' is-active' : ''
+                        }`}
+                        type="button"
+                        onClick={() => setSelectedDirectionKey(choice.key)}
+                      >
+                        <strong>{choice.label}</strong>
+                        <span>
+                          {choice.arrivalsCount} arrivi · {choice.vehiclesCount} mezzi live
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
             </div>
           ) : null}
-        </header>
-
-        <section className="panel map-panel square-map-panel">
-          <div className="map-panel-header compact-map-header">
-            <div>
-              <p className="map-label">Mappa live</p>
-              <h2>
-                {selectedLine
-                  ? `Linea ${selectedLine}: mezzi, fermate e percorso`
-                  : 'Inserisci una linea per vedere i mezzi'}
-              </h2>
-            </div>
-            <div className="map-legend">
-              <span className="legend-dot legend-live-vehicle">Mezzi live</span>
-              {selectedLine && visibleLinePaths.length > 0 ? (
-                <span className="legend-dot legend-line-route">Percorso linea</span>
-              ) : null}
-              {showStops ? <span className="legend-dot legend-nearby-stop">Fermate</span> : null}
-              {selectedStopCode ? (
-                <span className="legend-dot legend-selected-stop">Fermata attiva</span>
-              ) : null}
-              {focusLocation?.kind === 'address' ? (
-                <span className="legend-dot legend-address-location">Indirizzo</span>
-              ) : null}
-              {focusLocation?.kind === 'user' ? (
-                <span className="legend-dot legend-user-location">Posizione</span>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="map-frame square-map-frame">
-            <MapView
-              lineLabel={selectedLine}
-              vehicleMarkers={visibleVehicles}
-              linePaths={visibleLinePaths}
-              focusLocation={focusLocation}
-              nearbyStops={nearbyStops}
-              showStops={showStops}
-              selectedStopCode={selectedStopCode}
-              selectedStop={selectedStop}
-              activeLine={selectedLine}
-              selectedStopArrivals={selectedStopArrivals}
-              loadingStopArrivals={loadingStopArrivals}
-              recenterFocusRequest={recenterUserLocationRequest}
-              onSelectStop={handleStopSelect}
-              onSelectLine={handleStopLineSelect}
-            />
-          </div>
         </section>
+
       </section>
     </div>
   )

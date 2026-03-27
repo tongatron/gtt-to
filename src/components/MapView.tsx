@@ -15,6 +15,7 @@ import type {
   LineVehicleRecord,
   StopRecord,
   StopServiceRecord,
+  VehicleMode,
 } from '../types'
 
 const TURIN_CENTER: [number, number] = [45.0703, 7.6869]
@@ -158,11 +159,75 @@ function buildSelectableStopServices(services: StopServiceRecord[]): StopService
   )
 }
 
-function createVehicleIcon(vehicle: LineVehicleRecord): DivIcon {
-  const backgroundColor = vehicle.routeColor ?? '#0057b8'
+function adjustHexColor(hexColor: string, amount: number): string {
+  const normalized = hexColor.replace('#', '')
+  if (normalized.length !== 6) {
+    return hexColor
+  }
+
+  const adjustChannel = (startIndex: number) => {
+    const value = Number.parseInt(normalized.slice(startIndex, startIndex + 2), 16)
+    const adjusted = Math.max(0, Math.min(255, value + amount))
+    return adjusted.toString(16).padStart(2, '0')
+  }
+
+  return `#${adjustChannel(0)}${adjustChannel(2)}${adjustChannel(4)}`
+}
+
+function getDirectionAccent(
+  routeColor: string | null,
+  directionId: number | null | undefined,
+): string {
+  const baseColor = routeColor ?? '#0057b8'
+  if (directionId === 1) {
+    return adjustHexColor(baseColor, -42)
+  }
+
+  return adjustHexColor(baseColor, 8)
+}
+
+function normalizeDirectionLabel(value: string | null | undefined): string {
+  return (value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+}
+
+function resolveVehicleDirectionId(
+  vehicle: LineVehicleRecord,
+  paths: LinePathRecord[],
+): number | null {
+  const normalizedHeadsign = normalizeDirectionLabel(vehicle.headsign ?? vehicle.routeName)
+  const matchingPath = paths.find(
+    (path) => normalizeDirectionLabel(path.headsign) === normalizedHeadsign,
+  )
+
+  return matchingPath?.directionId ?? null
+}
+
+function getVehicleModeIcon(mode: VehicleMode): string {
+  switch (mode) {
+    case 'tram':
+      return '🚋'
+    case 'metro':
+      return 'Ⓜ'
+    case 'rail':
+      return '🚆'
+    case 'trolleybus':
+      return '⚡'
+    case 'bus':
+      return '🚌'
+    default:
+      return '🚍'
+  }
+}
+
+function createVehicleIcon(vehicle: LineVehicleRecord, accentColor?: string): DivIcon {
+  const backgroundColor = accentColor ?? vehicle.routeColor ?? '#0057b8'
   const textColor = vehicle.routeTextColor ?? '#ffffff'
   const bearing = normalizeBearing(vehicle.bearing)
   const markerClasses = ['vehicle-marker-wrap']
+  const modeIcon = getVehicleModeIcon(vehicle.mode)
 
   if (bearing !== null) {
     markerClasses.push('has-bearing')
@@ -180,16 +245,16 @@ function createVehicleIcon(vehicle: LineVehicleRecord): DivIcon {
         class="${markerClasses.join(' ')}"
         style="--marker-accent:${escapeHtml(backgroundColor)};--bearing:${bearing ?? 0}deg;"
       >
-        <span class="vehicle-pulse" aria-hidden="true"></span>
         <span class="vehicle-direction-anchor" aria-hidden="true">
           <span class="vehicle-direction-arrow"></span>
         </span>
         <div
           class="vehicle-marker"
-          style="background:${escapeHtml(backgroundColor)};color:${escapeHtml(textColor)}"
+          style="color:${escapeHtml(backgroundColor)}"
         >
-          <span>${escapeHtml(vehicle.lineCode)}</span>
+          <span class="vehicle-mode-glyph" aria-hidden="true">${escapeHtml(modeIcon)}</span>
         </div>
+        <span class="vehicle-line-badge">${escapeHtml(vehicle.lineCode)}</span>
       </div>
     `,
   })
@@ -228,6 +293,37 @@ function createFocusIcon(kind: FocusLocation['kind']): DivIcon {
     html: `
       <div class="focus-marker focus-marker-${kind}" aria-label="${label}">
         <span aria-hidden="true">${emoji}</span>
+      </div>
+    `,
+  })
+}
+
+function createCombinedStopFocusIcon(
+  stopCode: string,
+  kind: FocusLocation['kind'],
+  isSelected: boolean,
+): DivIcon {
+  const emoji = FOCUS_EMOJIS[kind]
+  const stopClasses = ['stop-marker']
+
+  if (isSelected) {
+    stopClasses.push('is-selected')
+  }
+
+  return divIcon({
+    className: 'combined-marker-shell',
+    iconSize: [84, 52],
+    iconAnchor: [42, 26],
+    popupAnchor: [0, -16],
+    html: `
+      <div class="combined-stop-focus-marker">
+        <div class="${stopClasses.join(' ')}">
+          <span class="stop-marker-emoji" aria-hidden="true">🚏</span>
+          <span>${escapeHtml(stopCode)}</span>
+        </div>
+        <div class="focus-marker focus-marker-${kind} combined-focus-badge" aria-hidden="true">
+          <span>${emoji}</span>
+        </div>
       </div>
     `,
   })
@@ -430,23 +526,24 @@ interface StopPopupContentProps {
 
 function StopPopupContent({
   stop,
-  isSelected,
   activeLine,
-  selectedStopArrivals,
-  loadingStopArrivals,
   onSelectLine,
   onSelectStop,
 }: StopPopupContentProps) {
   const distanceLabel = formatDistance(stop.distanceMeters)
-  const arrivalsPreview = selectedStopArrivals.slice(0, 4)
-  const selectableServices = buildSelectableStopServices(stop.services)
+  const selectableServices = buildSelectableStopServices(stop.services).filter((service) =>
+    activeLine ? service.lineCode === activeLine : true,
+  )
+  const visibleLinesLabel = activeLine
+    ? activeLine
+    : buildStopServicesSummary(stop)
 
   return (
     <div className="popup-content">
       <strong>🚏 {stop.stopName}</strong>
       <span>Palina {stop.stopCode}</span>
       {distanceLabel ? <span>Distanza {distanceLabel}</span> : null}
-      <span>Linee: {buildStopServicesSummary(stop)}</span>
+      <span>Linea: {visibleLinesLabel}</span>
 
       {selectableServices.length > 0 ? (
         <div className="popup-line-grid">
@@ -469,31 +566,6 @@ function StopPopupContent({
           ))}
         </div>
       ) : null}
-
-      {isSelected ? (
-        loadingStopArrivals ? (
-          <span>Caricamento arrivi previsti...</span>
-        ) : arrivalsPreview.length > 0 ? (
-          <div className="popup-arrival-preview">
-            {arrivalsPreview.map((arrival) => (
-              <div
-                key={`${arrival.tripId}:${arrival.predictedArrival}`}
-                className="popup-arrival-row"
-              >
-                <span className="popup-arrival-copy">
-                  <strong>{arrival.lineCode}</strong>
-                  <span>{formatDestinationLabel(arrival.headsign ?? arrival.routeName)}</span>
-                </span>
-                <span>{formatMinutesUntil(arrival.minutesUntil)}</span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <span>Nessun arrivo previsto disponibile per questa fermata.</span>
-        )
-      ) : (
-        <span>Clicca la fermata per caricare gli arrivi previsti.</span>
-      )}
     </div>
   )
 }
@@ -531,30 +603,68 @@ export function MapView({
   onSelectStop,
   onSelectLine,
 }: MapViewProps) {
+  const combinedFocusStop = useMemo(() => {
+    if (!focusLocation || !selectedStop) {
+      return null
+    }
+
+    const distanceMeters = latLng(focusLocation.latitude, focusLocation.longitude).distanceTo(
+      latLng(selectedStop.latitude, selectedStop.longitude),
+    )
+
+    if (distanceMeters > 22) {
+      return null
+    }
+
+    return {
+      latitude: selectedStop.latitude,
+      longitude: selectedStop.longitude,
+      focusLocation,
+      stop: selectedStop,
+    }
+  }, [focusLocation, selectedStop])
+
   const sortedVehicles = useMemo(() => {
-    return [...vehicleMarkers].sort((left, right) => {
-      return (left.vehicleLabel ?? left.tripId).localeCompare(
-        right.vehicleLabel ?? right.tripId,
-        'it',
-      )
-    })
-  }, [vehicleMarkers])
+    return [...vehicleMarkers]
+      .map((vehicle) => ({
+        vehicle,
+        directionId: resolveVehicleDirectionId(vehicle, linePaths),
+      }))
+      .sort((left, right) => {
+        return (left.vehicle.vehicleLabel ?? left.vehicle.tripId).localeCompare(
+          right.vehicle.vehicleLabel ?? right.vehicle.tripId,
+          'it',
+        )
+      })
+      .map(({ directionId, vehicle }) => ({
+        ...vehicle,
+        markerAccentColor: getDirectionAccent(vehicle.routeColor, directionId),
+      }))
+  }, [linePaths, vehicleMarkers])
 
   const renderedLinePaths = useMemo(
     () =>
       linePaths
         .map((path) => ({
           path,
+          accentColor: getDirectionAccent(path.routeColor, path.directionId),
           positions: path.points.map(
             (point) => [point.latitude, point.longitude] as [number, number],
           ),
-          arrows: buildRouteArrowMarkers(path),
+          arrows: buildRouteArrowMarkers({
+            ...path,
+            routeColor: getDirectionAccent(path.routeColor, path.directionId),
+          }),
         }))
         .filter((path) => path.positions.length >= 2),
     [linePaths],
   )
 
   const visibleStops = useMemo(() => {
+    if (activeLine && selectedStop) {
+      return [selectedStop]
+    }
+
     const selectedStops = selectedStop ? [selectedStop] : []
 
     if (showStops) {
@@ -576,10 +686,55 @@ export function MapView({
     }
 
     return [selectedStop]
-  }, [nearbyStops, selectedStop, showStops])
+  }, [activeLine, nearbyStops, selectedStop, showStops])
 
   const fitPoints = useMemo<FitPoint[]>(() => {
     const points: FitPoint[] = []
+
+    if (activeLine && selectedStop) {
+      return [
+        {
+          key: `selected-stop:${selectedStop.stopCode}`,
+          latitude: selectedStop.latitude,
+          longitude: selectedStop.longitude,
+        },
+      ]
+    }
+
+    if (focusLocation && selectedStop) {
+      return [
+        {
+          key: `focus:${focusLocation.kind}`,
+          latitude: focusLocation.latitude,
+          longitude: focusLocation.longitude,
+        },
+        {
+          key: `selected-stop:${selectedStop.stopCode}`,
+          latitude: selectedStop.latitude,
+          longitude: selectedStop.longitude,
+        },
+      ]
+    }
+
+    if (focusLocation) {
+      return [
+        {
+          key: `focus:${focusLocation.kind}`,
+          latitude: focusLocation.latitude,
+          longitude: focusLocation.longitude,
+        },
+      ]
+    }
+
+    if (selectedStop) {
+      return [
+        {
+          key: `selected-stop:${selectedStop.stopCode}`,
+          latitude: selectedStop.latitude,
+          longitude: selectedStop.longitude,
+        },
+      ]
+    }
 
     renderedLinePaths.forEach(({ path }) => {
       if (path.points.length === 0) {
@@ -620,24 +775,8 @@ export function MapView({
       })),
     )
 
-    if (focusLocation) {
-      points.push({
-        key: `focus:${focusLocation.kind}`,
-        latitude: focusLocation.latitude,
-        longitude: focusLocation.longitude,
-      })
-    }
-
-    if (points.length === 0 && selectedStop) {
-      points.push({
-        key: `selected-stop:${selectedStop.stopCode}`,
-        latitude: selectedStop.latitude,
-        longitude: selectedStop.longitude,
-      })
-    }
-
     return points
-  }, [focusLocation, renderedLinePaths, selectedStop, sortedVehicles])
+  }, [activeLine, focusLocation, renderedLinePaths, selectedStop, sortedVehicles])
 
   return (
     <MapContainer
@@ -657,15 +796,15 @@ export function MapView({
         requestVersion={recenterFocusRequest}
       />
 
-      {renderedLinePaths.map(({ path, positions }) => (
+      {renderedLinePaths.map(({ path, positions, accentColor }) => (
         <Polyline
           key={path.pathId}
           positions={positions}
           pathOptions={{
-            color: path.routeColor ?? '#0057b8',
-            weight: 5,
-            opacity: 0.44,
-            dashArray: path.directionId === 1 ? '12 10' : undefined,
+            color: accentColor,
+            weight: path.directionId === 1 ? 4 : 6,
+            opacity: path.directionId === 1 ? 0.5 : 0.72,
+            dashArray: path.directionId === 1 ? '10 9' : undefined,
           }}
         />
       ))}
@@ -682,7 +821,7 @@ export function MapView({
         )),
       )}
 
-      {focusLocation ? (
+      {focusLocation && !combinedFocusStop ? (
         <Marker
           position={[focusLocation.latitude, focusLocation.longitude]}
           icon={createFocusIcon(focusLocation.kind)}
@@ -699,8 +838,39 @@ export function MapView({
         </Marker>
       ) : null}
 
+      {combinedFocusStop ? (
+        <Marker
+          position={[combinedFocusStop.latitude, combinedFocusStop.longitude]}
+          icon={createCombinedStopFocusIcon(
+            combinedFocusStop.stop.stopCode,
+            combinedFocusStop.focusLocation.kind,
+            true,
+          )}
+          zIndexOffset={780}
+        >
+          <Popup>
+            <div className="popup-content">
+              <strong>🚏 {combinedFocusStop.stop.stopName}</strong>
+              <span>Palina {combinedFocusStop.stop.stopCode}</span>
+              <span>
+                {combinedFocusStop.focusLocation.kind === 'user'
+                  ? '🧍 La tua posizione coincide con la fermata'
+                  : '📍 Punto cercato vicino alla fermata'}
+              </span>
+              <span>{combinedFocusStop.focusLocation.label}</span>
+            </div>
+          </Popup>
+        </Marker>
+      ) : null}
+
       {visibleStops.map((stop) => {
         const isSelected = stop.stopCode === selectedStopCode
+        const shouldHideAsCombined =
+          combinedFocusStop !== null && stop.stopCode === combinedFocusStop.stop.stopCode
+
+        if (shouldHideAsCombined) {
+          return null
+        }
 
         return (
           <Marker
@@ -733,7 +903,7 @@ export function MapView({
         <Marker
           key={vehicle.vehicleId ?? vehicle.tripId}
           position={[vehicle.latitude, vehicle.longitude]}
-          icon={createVehicleIcon(vehicle)}
+          icon={createVehicleIcon(vehicle, vehicle.markerAccentColor)}
           zIndexOffset={700}
         >
           <Popup>
