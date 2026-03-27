@@ -8,6 +8,19 @@ App locale per visualizzare i mezzi GTT live sulla mappa partendo direttamente d
 - backend: Express + GTFS statico + GTFS Realtime GTT
 - PWA: installabile in locale/produzione, con cache base della shell
 
+## Architettura
+
+L'applicazione ha una sola interfaccia utente, ma e composta da due parti:
+
+- frontend React: renderizza la UI e la mappa
+- backend Express: raccoglie ed espone i dati tramite API `/api/*`
+
+In sviluppo si usa un solo URL locale:
+
+- app + API: `http://localhost:3210`
+
+Il server Express monta anche Vite in development, cosi non sembra di avere due app separate.
+
 ## Avvio sviluppo
 
 ```bash
@@ -20,8 +33,6 @@ URL:
 - app: `http://localhost:3210`
 - backend API: `http://localhost:3210/api/*`
 - healthcheck: `http://localhost:3210/api/health`
-
-In sviluppo frontend e backend passano dallo stesso server locale, cosi non sembra di avere due app separate.
 
 ## Build locale completa
 
