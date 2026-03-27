@@ -171,6 +171,11 @@ interface StaticRoutesTripsData {
   tripsById: Map<string, TripRecord>
 }
 
+interface StaticStopsIndexData {
+  stopsById: Map<string, StopRecord>
+  stopsByCode: Map<string, StopRecord>
+}
+
 interface LinePathsStaticData {
   routesById: Map<string, RouteRecord>
   tripsById: Map<string, TripRecord>
@@ -188,6 +193,12 @@ interface StaticRoutesTripsCacheEntry {
   data: StaticRoutesTripsData
   expiresAt: number
   promise: Promise<StaticRoutesTripsData> | null
+}
+
+interface StaticStopsIndexCacheEntry {
+  data: StaticStopsIndexData
+  expiresAt: number
+  promise: Promise<StaticStopsIndexData> | null
 }
 
 interface TripUpdateFeedRecord {
@@ -429,6 +440,15 @@ const staticRoutesTripsCache: StaticRoutesTripsCacheEntry = {
   data: {
     routesById: new Map(),
     tripsById: new Map(),
+  },
+  expiresAt: 0,
+  promise: null,
+}
+
+const staticStopsIndexCache: StaticStopsIndexCacheEntry = {
+  data: {
+    stopsById: new Map(),
+    stopsByCode: new Map(),
   },
   expiresAt: 0,
   promise: null,
@@ -1013,6 +1033,117 @@ function buildTripsById(rows: Array<Record<string, string>>): Map<string, TripRe
   return tripsById
 }
 
+function buildStopsIndex(rows: Array<Record<string, string>>): StaticStopsIndexData {
+  const stopsById = new Map<string, StopRecord>()
+  const stopsByCode = new Map<string, StopRecord>()
+
+  for (const row of rows) {
+    const stopId = row.stop_id?.trim()
+    const stopCode = row.stop_code?.trim()
+    const latitude = row.stop_lat ? Number.parseFloat(row.stop_lat) : Number.NaN
+    const longitude = row.stop_lon ? Number.parseFloat(row.stop_lon) : Number.NaN
+
+    if (!stopId || !stopCode || Number.isNaN(latitude) || Number.isNaN(longitude)) {
+      continue
+    }
+
+    const stopRecord: StopRecord = {
+      stopId,
+      stopCode,
+      stopName: row.stop_name?.replace(/^Fermata\s+\d+\s+-\s+/i, '').trim() || stopCode,
+      stopDescription: row.stop_desc?.trim() || null,
+      latitude,
+      longitude,
+      url: row.stop_url?.trim() || null,
+      wheelchairBoarding: row.wheelchair_boarding?.trim() || null,
+      modes: new Set<VehicleMode>(),
+      lines: new Set<string>(),
+      services: new Map<string, StopServiceRecord>(),
+    }
+
+    stopsById.set(stopId, stopRecord)
+    stopsByCode.set(stopCode, stopRecord)
+  }
+
+  return {
+    stopsById,
+    stopsByCode,
+  }
+}
+
+function populateStopServicesFromStopTimes(
+  stopTimesFile: Uint8Array,
+  tripsById: Map<string, TripRecord>,
+  routesById: Map<string, RouteRecord>,
+  stopsById: Map<string, StopRecord>,
+) {
+  const text = strFromU8(stopTimesFile)
+  const firstNewlineIndex = text.indexOf('\n')
+  const headerLine = (
+    firstNewlineIndex === -1 ? text : text.slice(0, firstNewlineIndex)
+  )
+    .replace(/^\uFEFF/, '')
+    .replace(/\r$/, '')
+  const headers = headerLine.split(',').map(stripCsvCell)
+  const tripIdIndex = headers.indexOf('trip_id')
+  const stopIdIndex = headers.indexOf('stop_id')
+
+  if (tripIdIndex === -1 || stopIdIndex === -1) {
+    return
+  }
+
+  let lineStart = firstNewlineIndex === -1 ? text.length : firstNewlineIndex + 1
+  while (lineStart < text.length) {
+    let lineEnd = text.indexOf('\n', lineStart)
+    if (lineEnd === -1) {
+      lineEnd = text.length
+    }
+
+    const row = text.slice(lineStart, lineEnd).replace(/\r$/, '')
+    lineStart = lineEnd + 1
+
+    if (!row) {
+      continue
+    }
+
+    const columns = row.split(',').map(stripCsvCell)
+    const tripId = columns[tripIdIndex]
+    const stopId = columns[stopIdIndex]
+
+    if (!tripId || !stopId) {
+      continue
+    }
+
+    const tripRecord = tripsById.get(tripId)
+    if (!tripRecord) {
+      continue
+    }
+
+    const routeRecord = routesById.get(tripRecord.routeId)
+    if (!routeRecord) {
+      continue
+    }
+
+    const { mode, label } = resolveRouteMode(routeRecord.routeTypeRaw)
+    if (!SUPPORTED_SURFACE_MODES.has(mode)) {
+      continue
+    }
+
+    const stopRecord = stopsById.get(stopId)
+    if (!stopRecord) {
+      continue
+    }
+
+    stopRecord.modes.add(mode)
+    stopRecord.lines.add(routeRecord.routeShortName)
+    stopRecord.services.set(buildStopServiceKey(routeRecord.routeShortName, mode), {
+      lineCode: routeRecord.routeShortName,
+      mode,
+      modeLabel: label,
+    })
+  }
+}
+
 function parseRelevantShapePoints(
   shapesFile: Uint8Array | undefined,
   relevantShapeIds: Set<string>,
@@ -1157,6 +1288,49 @@ async function getLinePathsStaticData(
     routesById: metadata.routesById,
     tripsById: metadata.tripsById,
     shapesById: parseRelevantShapePoints(archive['shapes.txt'], relevantShapeIds),
+  }
+}
+
+async function getStaticStopsIndexData(): Promise<StaticStopsIndexData> {
+  if (Date.now() < staticStopsIndexCache.expiresAt) {
+    return staticStopsIndexCache.data
+  }
+
+  if (staticStopsIndexCache.promise) {
+    return staticStopsIndexCache.promise
+  }
+
+  staticStopsIndexCache.promise = (async () => {
+    const archive = await fetchStaticGtfsArchive()
+    const routesText = archive['routes.txt']
+    const tripsText = archive['trips.txt']
+    const stopsText = archive['stops.txt']
+    const stopTimesText = archive['stop_times.txt']
+
+    if (!routesText || !tripsText || !stopsText || !stopTimesText) {
+      throw new Error('Static GTFS archive is missing required stop index files.')
+    }
+
+    const routesById = buildRoutesById(parseCsvRows(routesText))
+    const tripsById = buildTripsById(parseCsvRows(tripsText))
+    const data = buildStopsIndex(parseCsvRows(stopsText))
+
+    populateStopServicesFromStopTimes(
+      stopTimesText,
+      tripsById,
+      routesById,
+      data.stopsById,
+    )
+
+    staticStopsIndexCache.data = data
+    staticStopsIndexCache.expiresAt = Date.now() + STATIC_CACHE_TTL_MS
+    return data
+  })()
+
+  try {
+    return await staticStopsIndexCache.promise
+  } finally {
+    staticStopsIndexCache.promise = null
   }
 }
 
@@ -1756,7 +1930,7 @@ app.get('/api/stops/nearby', async (request, response, next) => {
       return
     }
 
-    const staticData = await getStaticGtfsData()
+    const staticData = await getStaticStopsIndexData()
     const candidates = Array.from(staticData.stopsById.values())
       .filter((stop) => stop.lines.size > 0)
       .map((stop) => ({
@@ -1834,7 +2008,7 @@ app.get('/api/stops/bounds', async (request, response, next) => {
     const centerLatitude = (minLatitude + maxLatitude) / 2
     const centerLongitude = (minLongitude + maxLongitude) / 2
 
-    const staticData = await getStaticGtfsData()
+    const staticData = await getStaticStopsIndexData()
     const stops = Array.from(staticData.stopsById.values())
       .filter(
         (stop) =>
