@@ -1022,83 +1022,9 @@ function App() {
       }
     }
 
-    if (!selectedStop || upcomingStopLines.length === 0) {
-      setVehiclesResponse(null)
-      setLinePathsResponse(null)
-      return
-    }
-
-    const abortController = new AbortController()
-    const previewLineCodes = Array.from(
-      new Set(upcomingStopLines.map((arrival) => arrival.lineCode)),
-    ).slice(0, 6)
-
-    void Promise.all([
-      Promise.all(
-        previewLineCodes.map(async (lineCode) => {
-          const apiResponse = await fetch(
-            `/api/vehicles?line=${encodeURIComponent(lineCode)}`,
-            { signal: abortController.signal },
-          )
-          if (!apiResponse.ok) {
-            return null
-          }
-
-          return (await apiResponse.json()) as LineVehiclesResponse
-        }),
-      ),
-      Promise.all(
-        previewLineCodes.map(async (lineCode) => {
-          const apiResponse = await fetch(
-            `/api/line-paths?line=${encodeURIComponent(lineCode)}`,
-            { signal: abortController.signal },
-          )
-          if (!apiResponse.ok) {
-            return null
-          }
-
-          return (await apiResponse.json()) as LinePathsResponse
-        }),
-      ),
-    ])
-      .then(([vehicleResponses, pathResponses]) => {
-        if (abortController.signal.aborted) {
-          return
-        }
-
-        startTransition(() => {
-          setVehiclesResponse({
-            fetchedAt: new Date().toISOString(),
-            feedTimestamp:
-              vehicleResponses.find((response) => response?.feedTimestamp)?.feedTimestamp ?? null,
-            stale: false,
-            warnings: [],
-            line: 'preview',
-            vehicles: vehicleResponses.flatMap((response) => response?.vehicles ?? []),
-          })
-          setLinePathsResponse({
-            fetchedAt: new Date().toISOString(),
-            line: 'preview',
-            paths: pathResponses.flatMap((response) => response?.paths ?? []),
-          })
-        })
-      })
-      .catch((fetchError) => {
-        if ((fetchError as Error).name === 'AbortError') {
-          return
-        }
-
-        setError(
-          fetchError instanceof Error
-            ? fetchError.message
-            : 'Impossibile caricare le linee in preview per la fermata.',
-        )
-      })
-
-    return () => {
-      abortController.abort()
-    }
-  }, [loadLinePaths, loadVehicles, selectedLine, selectedStop, simulationMode, upcomingStopLines])
+    setVehiclesResponse(null)
+    setLinePathsResponse(null)
+  }, [loadLinePaths, loadVehicles, selectedLine, simulationMode])
 
   const selectedLineArrivals = useMemo(() => {
     if (!selectedLine) {
