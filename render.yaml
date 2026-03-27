@@ -2,6 +2,7 @@ services:
   - type: web
     name: gtt-to
     runtime: node
+    plan: free
     buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
