@@ -14,6 +14,9 @@ const NOMINATIM_SEARCH_URL = 'https://nominatim.openstreetmap.org/search';
 const REALTIME_CACHE_TTL_MS = 10_000;
 const STATIC_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const GEOCODE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const ARRIVALS_RESPONSE_CACHE_TTL_MS = 30_000;
+const VEHICLES_RESPONSE_CACHE_TTL_MS = 30_000;
+const LINE_PATHS_RESPONSE_CACHE_TTL_MS = 60 * 60 * 1000;
 const UPCOMING_WINDOW_MS = 2 * 60 * 60 * 1000;
 const PAST_GRACE_MS = 2 * 60 * 1000;
 const DEFAULT_NEARBY_RADIUS_METERS = 700;
@@ -108,6 +111,9 @@ const vehiclePositionCache = {
     expiresAt: 0,
     promise: null,
 };
+const arrivalsResponseCache = new Map();
+const vehiclesResponseCache = new Map();
+const linePathsResponseCache = new Map();
 const geocodeCache = new Map();
 let feedMessageTypePromise = null;
 function normalizeColor(value) {
@@ -122,6 +128,23 @@ function toIsoString(value) {
         return null;
     }
     return new Date(numeric * 1000).toISOString();
+}
+function getTimedCachedResponse(cache, key) {
+    const cachedEntry = cache.get(key);
+    if (!cachedEntry) {
+        return null;
+    }
+    if (cachedEntry.expiresAt <= Date.now()) {
+        cache.delete(key);
+        return null;
+    }
+    return cachedEntry.value;
+}
+function setTimedCachedResponse(cache, key, value, ttlMs) {
+    cache.set(key, {
+        expiresAt: Date.now() + ttlMs,
+        value,
+    });
 }
 function resolveRouteMode(routeTypeRaw) {
     switch (routeTypeRaw) {
@@ -1755,6 +1778,12 @@ app.get('/api/arrivals', async (request, response, next) => {
             response.status(400).json({ error: 'stopCode is required.' });
             return;
         }
+        const cachedPayload = getTimedCachedResponse(arrivalsResponseCache, stopCode);
+        if (cachedPayload) {
+            response.setHeader('Cache-Control', 'no-store');
+            response.json(cachedPayload);
+            return;
+        }
         if (IS_RENDER_RUNTIME) {
             const staticStopsData = await getStaticStopsLiteData();
             const stop = staticStopsData.stopsByCode.get(stopCode);
@@ -1763,6 +1792,7 @@ app.get('/api/arrivals', async (request, response, next) => {
                 return;
             }
             const payload = await fetchOfficialStopArrivals(stopCode, stop);
+            setTimedCachedResponse(arrivalsResponseCache, stopCode, payload, ARRIVALS_RESPONSE_CACHE_TTL_MS);
             response.setHeader('Cache-Control', 'no-store');
             response.json(payload);
             return;
@@ -1819,6 +1849,7 @@ app.get('/api/arrivals', async (request, response, next) => {
             relatedStops,
             arrivals,
         };
+        setTimedCachedResponse(arrivalsResponseCache, stopCode, payload, ARRIVALS_RESPONSE_CACHE_TTL_MS);
         response.setHeader('Cache-Control', 'no-store');
         response.json(payload);
     }
@@ -1834,6 +1865,12 @@ app.get('/api/vehicles', async (request, response, next) => {
             return;
         }
         const normalizedLine = rawLine.toUpperCase();
+        const cachedPayload = getTimedCachedResponse(vehiclesResponseCache, normalizedLine);
+        if (cachedPayload) {
+            response.setHeader('Cache-Control', 'no-store');
+            response.json(cachedPayload);
+            return;
+        }
         const staticData = await getStaticRoutesTripsData();
         const { snapshot, stale, warnings } = await getVehiclePositionSnapshot();
         const vehiclesByKey = new Map();
@@ -1891,6 +1928,7 @@ app.get('/api/vehicles', async (request, response, next) => {
             line: rawLine,
             vehicles,
         };
+        setTimedCachedResponse(vehiclesResponseCache, normalizedLine, payload, VEHICLES_RESPONSE_CACHE_TTL_MS);
         response.setHeader('Cache-Control', 'no-store');
         response.json(payload);
     }
@@ -1905,19 +1943,27 @@ app.get('/api/line-paths', async (request, response, next) => {
             response.status(400).json({ error: 'line is required.' });
             return;
         }
+        const normalizedLine = rawLine.toUpperCase();
+        const cachedPayload = getTimedCachedResponse(linePathsResponseCache, normalizedLine);
+        if (cachedPayload) {
+            response.setHeader('Cache-Control', 'no-store');
+            response.json(cachedPayload);
+            return;
+        }
         if (IS_RENDER_RUNTIME) {
-            const payload = await getRenderLinePathsData(rawLine.trim().toUpperCase());
+            const payload = await getRenderLinePathsData(normalizedLine);
+            setTimedCachedResponse(linePathsResponseCache, normalizedLine, payload, LINE_PATHS_RESPONSE_CACHE_TTL_MS);
             response.setHeader('Cache-Control', 'no-store');
             response.json(payload);
             return;
         }
-        const normalizedLine = rawLine.toUpperCase();
         const staticData = await getLinePathsStaticData(normalizedLine);
         const payload = {
             fetchedAt: new Date().toISOString(),
             line: rawLine,
             paths: buildLinePaths(normalizedLine, staticData),
         };
+        setTimedCachedResponse(linePathsResponseCache, normalizedLine, payload, LINE_PATHS_RESPONSE_CACHE_TTL_MS);
         response.setHeader('Cache-Control', 'no-store');
         response.json(payload);
     }

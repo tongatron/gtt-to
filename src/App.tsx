@@ -22,7 +22,7 @@ import type {
 } from './types'
 import './App.css'
 
-const POLL_INTERVAL_MS = 15_000
+const POLL_INTERVAL_MS = 30_000
 const DEFAULT_STOPS_RADIUS_METERS = 1400
 const DEFAULT_STOPS_LIMIT = 20
 const RECENT_SELECTIONS_STORAGE_KEY = 'gtt-to:recent-selections'
@@ -1039,11 +1039,12 @@ function App() {
       return filteredArrivals.slice(0, 4)
     }
 
-    return filteredArrivals
-      .filter(
-        (arrival) =>
-          normalizeDirectionKey(arrival.headsign ?? arrival.routeName) === selectedDirectionKey,
-      )
+    const directionFilteredArrivals = filteredArrivals.filter(
+      (arrival) =>
+        normalizeDirectionKey(arrival.headsign ?? arrival.routeName) === selectedDirectionKey,
+    )
+
+    return (directionFilteredArrivals.length > 0 ? directionFilteredArrivals : filteredArrivals)
       .slice(0, 4)
   }, [selectedDirectionKey, selectedLine, selectedStopArrivals])
 
@@ -1099,10 +1100,12 @@ function App() {
       return vehicles
     }
 
-    return vehicles.filter(
+    const directionFilteredVehicles = vehicles.filter(
       (vehicle) =>
         normalizeDirectionKey(vehicle.headsign ?? vehicle.routeName) === selectedDirectionKey,
     )
+
+    return directionFilteredVehicles.length > 0 ? directionFilteredVehicles : vehicles
   }, [selectedDirectionKey, vehiclesResponse])
 
   const visibleLinePaths = useMemo(() => {
@@ -1111,9 +1114,11 @@ function App() {
       return paths
     }
 
-    return paths.filter(
+    const directionFilteredPaths = paths.filter(
       (path) => normalizeDirectionKey(path.headsign ?? path.lineCode) === selectedDirectionKey,
     )
+
+    return directionFilteredPaths.length > 0 ? directionFilteredPaths : paths
   }, [linePathsResponse, selectedDirectionKey])
 
   const activeDirectionChoice = useMemo(
@@ -1399,58 +1404,60 @@ function App() {
                 </span>
               </div>
 
-              <div className="map-detail-section">
-                <div className="section-head">
-                  <p className="eyebrow">Tutti i passaggi della fermata</p>
-                  <span className="live-update-badge">
-                    <span className="live-update-dot" aria-hidden="true"></span>
-                    Ultimo aggiornamento {lastUpdatedLabel}
-                  </span>
-                </div>
-                {stopWideArrivals.length > 0 ? (
-                  <ul className="arrival-list mobile-arrival-list">
-                    {stopWideArrivals.map((arrival) => (
-                      <li key={`stop:${arrival.tripId}:${arrival.predictedArrival}`}>
-                        <button
-                          className={`arrival-row mobile-arrival-row arrival-select-button${
-                            selectedLine === arrival.lineCode ? ' is-active' : ''
-                          }`}
-                          type="button"
-                          onClick={() => {
-                            handleLineSelect(arrival.lineCode)
-                            setSelectedDirectionKey(
-                              normalizeDirectionKey(arrival.headsign ?? arrival.routeName),
-                            )
-                          }}
-                        >
-                          <span
-                            className="vehicle-line-pill"
-                            style={{
-                              backgroundColor: arrival.routeColor ?? undefined,
-                              color: arrival.routeTextColor ?? undefined,
+              {!selectedLine ? (
+                <div className="map-detail-section">
+                  <div className="section-head">
+                    <p className="eyebrow">Tutti i passaggi della fermata</p>
+                    <span className="live-update-badge">
+                      <span className="live-update-dot" aria-hidden="true"></span>
+                      Ultimo aggiornamento {lastUpdatedLabel}
+                    </span>
+                  </div>
+                  {stopWideArrivals.length > 0 ? (
+                    <ul className="arrival-list mobile-arrival-list">
+                      {stopWideArrivals.map((arrival) => (
+                        <li key={`stop:${arrival.tripId}:${arrival.predictedArrival}`}>
+                          <button
+                            className={`arrival-row mobile-arrival-row arrival-select-button${
+                              selectedLine === arrival.lineCode ? ' is-active' : ''
+                            }`}
+                            type="button"
+                            onClick={() => {
+                              handleLineSelect(arrival.lineCode)
+                              setSelectedDirectionKey(
+                                normalizeDirectionKey(arrival.headsign ?? arrival.routeName),
+                              )
                             }}
                           >
-                            {arrival.lineCode}
-                          </span>
+                            <span
+                              className="vehicle-line-pill"
+                              style={{
+                                backgroundColor: arrival.routeColor ?? undefined,
+                                color: arrival.routeTextColor ?? undefined,
+                              }}
+                            >
+                              {arrival.lineCode}
+                            </span>
 
-                          <span className="vehicle-row-copy">
-                            <strong>
-                              {formatDestinationLabel(arrival.headsign ?? arrival.routeName)}
-                            </strong>
-                            <span>{formatTime(arrival.predictedArrival)}</span>
-                          </span>
+                            <span className="vehicle-row-copy">
+                              <strong>
+                                {formatDestinationLabel(arrival.headsign ?? arrival.routeName)}
+                              </strong>
+                              <span>{formatTime(arrival.predictedArrival)}</span>
+                            </span>
 
-                          <span className="arrival-meta">
-                            <strong>{formatMinutesUntil(arrival.minutesUntil)}</strong>
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="empty-state">Nessun passaggio disponibile per questa fermata.</p>
-                )}
-              </div>
+                            <span className="arrival-meta">
+                              <strong>{formatMinutesUntil(arrival.minutesUntil)}</strong>
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="empty-state">Nessun passaggio disponibile per questa fermata.</p>
+                  )}
+                </div>
+              ) : null}
 
               {selectedLine ? (
                 <div className="map-detail-section">
