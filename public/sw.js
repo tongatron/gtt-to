@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'torino-line-radar-v1'
+const CACHE_VERSION = 'gtt-radar-v2'
 const APP_BASE_URL = new URL('./', self.location.href)
 const SHELL_CACHE = `${CACHE_VERSION}-shell`
 const ASSET_CACHE = `${CACHE_VERSION}-assets`
@@ -144,7 +144,8 @@ self.addEventListener('fetch', (event) => {
 
   if (
     requestUrl.origin === self.location.origin &&
-    requestUrl.pathname.startsWith('/api/vehicles')
+    requestUrl.pathname.startsWith('/api/') &&
+    !requestUrl.pathname.startsWith('/api/health')
   ) {
     event.respondWith(networkFirst(request, DATA_CACHE))
     return

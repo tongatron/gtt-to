@@ -1,16 +1,14 @@
 {
   "id": "./",
-  "name": "GTT Radar",
-  "short_name": "GTT Radar",
-  "description": "App mobile-first per controllare fermate, attese e mezzi GTT live sulla mappa a Torino.",
+  "name": "Torino Line Radar",
+  "short_name": "Line Radar",
+  "description": "Radar realtime dei mezzi GTT a Torino: inserisci una linea e guarda i veicoli live sulla mappa.",
   "lang": "it-IT",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "orientation": "portrait-primary",
   "theme_color": "#17345e",
   "background_color": "#fffaf2",
-  "prefer_related_applications": false,
   "categories": ["travel", "navigation", "maps", "utilities"],
   "icons": [
     {
