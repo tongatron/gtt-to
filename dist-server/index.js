@@ -22,6 +22,9 @@ const RELATED_STOP_RADIUS_METERS = 400;
 const RELATED_STOP_LIMIT = 6;
 const TORINO_VIEWBOX = '7.52,45.16,7.83,44.97';
 const TORINO_QUERY_SUFFIX = 'Torino, Piemonte, Italia';
+const IS_RENDER_RUNTIME = Boolean(process.env.RENDER ||
+    process.env.RENDER_EXTERNAL_URL ||
+    process.env.RENDER_SERVICE_ID);
 const SUPPORTED_SURFACE_MODES = new Set([
     'bus',
     'trolleybus',
@@ -1613,6 +1616,16 @@ app.get('/api/line-paths', async (request, response, next) => {
         const rawLine = String(request.query.line ?? '').trim();
         if (!rawLine) {
             response.status(400).json({ error: 'line is required.' });
+            return;
+        }
+        if (IS_RENDER_RUNTIME) {
+            const payload = {
+                fetchedAt: new Date().toISOString(),
+                line: rawLine,
+                paths: [],
+            };
+            response.setHeader('Cache-Control', 'no-store');
+            response.json(payload);
             return;
         }
         const normalizedLine = rawLine.toUpperCase();
