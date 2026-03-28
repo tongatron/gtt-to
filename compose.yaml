@@ -1,0 +1,9 @@
+services:
+  gtt-radar:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3210:3210"
+    environment:
+      PORT: 3210

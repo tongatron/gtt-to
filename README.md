@@ -51,6 +51,32 @@ La build completa gira su:
 
 Questa e la modalita giusta per provare la PWA, perche il service worker viene registrato solo in produzione.
 
+## Docker Desktop
+
+Puoi eseguire il progetto anche con Docker Desktop.
+
+Build immagine:
+
+```bash
+docker build -t gtt-radar .
+```
+
+Avvio container:
+
+```bash
+docker run --rm -p 3210:3210 gtt-radar
+```
+
+Oppure con Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+URL:
+
+- app + API: `http://localhost:3210`
+
 ## Come usare l'app
 
 1. Parti da localizzazione, numero fermata o indirizzo
