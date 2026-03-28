@@ -44,6 +44,19 @@ interface DirectionChoice {
   label: string
 }
 
+interface StopSummaryLine {
+  key: string
+  lineCode: string
+  destination: string
+  directionKey: string
+  times: string[]
+}
+
+interface WaitCardSummary {
+  primary: ArrivalRecord | null
+  next: string[]
+}
+
 interface RecentSelection {
   stopCode: string
   stopName: string
@@ -463,6 +476,8 @@ function App() {
   const [refreshingVehicles, setRefreshingVehicles] = useState(false)
   const [recenterFocusRequest, setRecenterFocusRequest] = useState(0)
   const [nowTickMs, setNowTickMs] = useState(() => Date.now())
+  // Wait-first UI: keep the map optional until the user needs spatial context.
+  const [isMapVisible, setIsMapVisible] = useState(false)
 
   const loadNearbyStops = useCallback(async (location: FocusLocation, signal?: AbortSignal) => {
     try {
@@ -774,10 +789,33 @@ function App() {
     [loadStopArrivals],
   )
 
-  const handleLineSelect = useCallback((lineCode: string) => {
-    setSelectedLine(lineCode)
-    setSelectedDirectionKey(null)
-  }, [])
+  const handleLineSelect = useCallback(
+    (lineCode: string) => {
+      if (selectedLine === lineCode) {
+        setSelectedLine(null)
+        setSelectedDirectionKey(null)
+        return
+      }
+
+      setSelectedLine(lineCode)
+      setSelectedDirectionKey(null)
+    },
+    [selectedLine],
+  )
+
+  const handleLineDirectionSelect = useCallback(
+    (lineCode: string, directionKey: string) => {
+      if (selectedLine === lineCode && selectedDirectionKey === directionKey) {
+        setSelectedLine(null)
+        setSelectedDirectionKey(null)
+        return
+      }
+
+      setSelectedLine(lineCode)
+      setSelectedDirectionKey(directionKey)
+    },
+    [selectedDirectionKey, selectedLine],
+  )
 
   const handleRecentSelection = useCallback(
     async (selection: RecentSelection) => {
@@ -1007,6 +1045,35 @@ function App() {
     }).slice(0, 6)
   }, [stopWideArrivals])
 
+  const stopSummaryLines = useMemo<StopSummaryLine[]>(() => {
+    const summaries = new Map<string, StopSummaryLine>()
+
+    stopWideArrivals.forEach((arrival) => {
+      const destination = formatDestinationLabel(arrival.headsign ?? arrival.routeName)
+      const directionKey = normalizeDirectionKey(arrival.headsign ?? arrival.routeName)
+      const key = `${arrival.lineCode}:${directionKey}`
+      const timeLabel = formatTime(arrival.predictedArrival)
+      const existingSummary = summaries.get(key)
+
+      if (existingSummary) {
+        if (!existingSummary.times.includes(timeLabel) && existingSummary.times.length < 3) {
+          existingSummary.times.push(timeLabel)
+        }
+        return
+      }
+
+      summaries.set(key, {
+        key,
+        lineCode: arrival.lineCode,
+        destination,
+        directionKey,
+        times: [timeLabel],
+      })
+    })
+
+    return Array.from(summaries.values()).slice(0, 6)
+  }, [stopWideArrivals])
+
   useEffect(() => {
     if (simulationMode) {
       return
@@ -1182,6 +1249,24 @@ function App() {
     })
   }, [selectedLine, selectedStop])
 
+  useEffect(() => {
+    setIsMapVisible(false)
+  }, [selectedStopCode, selectedLine])
+
+  const waitCardSummary = useMemo<WaitCardSummary>(() => {
+    if (selectedLineArrivals.length === 0) {
+      return {
+        primary: null,
+        next: [],
+      }
+    }
+
+    return {
+      primary: selectedLineArrivals[0] ?? null,
+      next: selectedLineArrivals.slice(1, 3).map((arrival) => formatMinutesUntil(arrival.minutesUntil)),
+    }
+  }, [selectedLineArrivals])
+
   const summaryMessage = useMemo(() => {
     if (simulationMode) {
       return 'Simulazione attiva: fermata 240, linea 4, due direzioni e mezzi in movimento.'
@@ -1339,120 +1424,98 @@ function App() {
                     ? `Fermata ${selectedStop.stopCode}`
                     : 'Scegli come vuoi partire'}
               </h2>
-              {selectedStop && upcomingStopLines.length > 0 ? (
-                <div className="map-line-strip">
-                  {upcomingStopLines.map((arrival) => (
+            </div>
+            {selectedStop ? (
+              <span className="live-update-badge">
+                <span className="live-update-dot" aria-hidden="true"></span>
+                LIVE
+              </span>
+            ) : null}
+          </div>
+
+          {selectedStop ? (
+            <div className="stop-summary-card">
+              <p className="stop-summary-title">
+                Fermata: <strong>{selectedStop.stopCode}</strong> -{' '}
+                <strong>{selectedStop.stopName}</strong>
+              </p>
+              {stopSummaryLines.length > 0 ? (
+                <div className="stop-summary-list">
+                  {stopSummaryLines.map((summary) => (
                     <button
-                      key={`${arrival.lineCode}:${arrival.tripId}`}
-                      className={`vehicle-line-pill map-line-pill-button${
-                        selectedLine === arrival.lineCode ? ' is-active' : ''
+                      key={summary.key}
+                      className={`stop-summary-item${
+                        selectedLine === summary.lineCode &&
+                        selectedDirectionKey === summary.directionKey
+                          ? ' is-active'
+                          : ''
                       }`}
                       type="button"
-                      onClick={() => {
-                        handleLineSelect(arrival.lineCode)
-                        setSelectedDirectionKey(
-                          normalizeDirectionKey(arrival.headsign ?? arrival.routeName),
-                        )
-                      }}
+                      onClick={() =>
+                        handleLineDirectionSelect(summary.lineCode, summary.directionKey)
+                      }
                     >
-                      {arrival.lineCode}
+                      <div className="stop-summary-line">
+                        <strong>Linea {summary.lineCode}</strong>
+                        <span>{summary.destination}</span>
+                      </div>
+                      <p className="stop-summary-times">
+                        Orario: {summary.times.join(' ')}
+                      </p>
                     </button>
                   ))}
                 </div>
               ) : null}
             </div>
-          </div>
+          ) : null}
 
-          <div className="map-frame mobile-map-frame">
-            {selectedStop ? (
-              <div className="map-update-overlay">
-                <span className="live-update-badge">
-                  <span className="live-update-dot" aria-hidden="true"></span>
-                  Ultimo aggiornamento {lastUpdatedLabel}
-                </span>
-              </div>
-            ) : null}
-            <MapView
-              lineLabel={selectedLine}
-              vehicleMarkers={visibleVehicles}
-              linePaths={visibleLinePaths}
-              focusLocation={focusLocation}
-              nearbyStops={nearbyStops}
-              showStops={nearbyStops.length > 0}
-              selectedStopCode={selectedStopCode}
-              selectedStop={selectedStop}
-              activeLine={selectedLine}
-              selectedStopArrivals={selectedStopArrivals}
-              loadingStopArrivals={loadingStopArrivals}
-              recenterFocusRequest={recenterFocusRequest}
-              onSelectStop={handleStopSelect}
-              onSelectLine={handleLineSelect}
-            />
-          </div>
+          {selectedStop && upcomingStopLines.length > 0 ? (
+            <div className="map-line-strip">
+              {upcomingStopLines.map((arrival) => (
+                <button
+                  key={`${arrival.lineCode}:${arrival.tripId}`}
+                  className={`vehicle-line-pill map-line-pill-button${
+                    selectedLine === arrival.lineCode ? ' is-active' : ''
+                  }`}
+                  type="button"
+                  onClick={() => handleLineSelect(arrival.lineCode)}
+                >
+                  {arrival.lineCode}
+                </button>
+              ))}
+            </div>
+          ) : null}
 
           {selectedStop ? (
             <div className="map-wait-panel">
-              <div className="selected-stop-banner wait-banner">
-                <strong>
-                  {selectedLine
-                    ? `Linea ${selectedLine}${activeLineChoice ? ` · ${activeLineChoice.service.modeLabel}` : ''}`
-                    : `Fermata ${selectedStop.stopCode}`}
-                </strong>
-                <span>
-                  {`${selectedStop.stopName} · fermata ${selectedStop.stopCode}`}
-                  {selectedLine && activeDirectionChoice ? ` · ${activeDirectionChoice.label}` : ''}
-                </span>
-              </div>
-
               {!selectedLine ? (
                 <div className="map-detail-section">
                   <div className="section-head">
-                    <p className="eyebrow">Tutti i passaggi della fermata</p>
-                    <span className="live-update-badge">
-                      <span className="live-update-dot" aria-hidden="true"></span>
-                      Ultimo aggiornamento {lastUpdatedLabel}
-                    </span>
+                    <p className="eyebrow">Scegli linea e direzione</p>
                   </div>
-                  {stopWideArrivals.length > 0 ? (
-                    <ul className="arrival-list mobile-arrival-list">
-                      {stopWideArrivals.map((arrival) => (
-                        <li key={`stop:${arrival.tripId}:${arrival.predictedArrival}`}>
-                          <button
-                            className={`arrival-row mobile-arrival-row arrival-select-button${
-                              selectedLine === arrival.lineCode ? ' is-active' : ''
-                            }`}
-                            type="button"
-                            onClick={() => {
-                              handleLineSelect(arrival.lineCode)
-                              setSelectedDirectionKey(
-                                normalizeDirectionKey(arrival.headsign ?? arrival.routeName),
-                              )
-                            }}
-                          >
-                            <span
-                              className="vehicle-line-pill"
-                              style={{
-                                backgroundColor: arrival.routeColor ?? undefined,
-                                color: arrival.routeTextColor ?? undefined,
-                              }}
-                            >
-                              {arrival.lineCode}
-                            </span>
-
-                            <span className="vehicle-row-copy">
-                              <strong>
-                                {formatDestinationLabel(arrival.headsign ?? arrival.routeName)}
-                              </strong>
-                              <span>{formatTime(arrival.predictedArrival)}</span>
-                            </span>
-
-                            <span className="arrival-meta">
-                              <strong>{formatMinutesUntil(arrival.minutesUntil)}</strong>
-                            </span>
-                          </button>
-                        </li>
+                  {stopSummaryLines.length > 0 ? (
+                    <div className="wait-choice-list">
+                      {stopSummaryLines.map((summary) => (
+                        <button
+                          key={summary.key}
+                          className="wait-choice-card"
+                          type="button"
+                          onClick={() =>
+                            handleLineDirectionSelect(summary.lineCode, summary.directionKey)
+                          }
+                        >
+                          <div className="wait-choice-head">
+                            <strong>Linea {summary.lineCode}</strong>
+                            <span>{summary.destination}</span>
+                          </div>
+                          <p className="wait-choice-meta">
+                            {summary.times[0] ? formatMinutesUntil(
+                              stopWideArrivals.find((arrival) => arrival.lineCode === summary.lineCode && normalizeDirectionKey(arrival.headsign ?? arrival.routeName) === summary.directionKey)?.minutesUntil ?? 0,
+                            ) : 'n/d'}
+                          </p>
+                        </button>
                       ))}
-                    </ul>
+                    </div>
                   ) : (
                     <p className="empty-state">Nessun passaggio disponibile per questa fermata.</p>
                   )}
@@ -1460,48 +1523,69 @@ function App() {
               ) : null}
 
               {selectedLine ? (
-                <div className="map-detail-section">
-                  <div className="section-head">
-                    <p className="eyebrow">Arrivi in ordine di attesa</p>
-                    <span className="live-update-badge">
-                      <span className="live-update-dot" aria-hidden="true"></span>
-                      Ultimo aggiornamento {lastUpdatedLabel}
+                <div className="wait-primary-card">
+                  <p className="eyebrow">Attesa</p>
+                  <div className="wait-primary-head">
+                    <div>
+                      <strong>Linea {selectedLine}</strong>
+                      <span>
+                        {activeDirectionChoice?.label ?? 'Direzione non disponibile'}
+                      </span>
+                    </div>
+                    <span className="wait-primary-minutes">
+                      {waitCardSummary.primary
+                        ? formatMinutesUntil(waitCardSummary.primary.minutesUntil)
+                        : 'n/d'}
                     </span>
                   </div>
-                  {selectedLineArrivals.length > 0 ? (
-                    <ul className="arrival-list mobile-arrival-list">
-                      {selectedLineArrivals.map((arrival) => (
-                        <li key={`${arrival.tripId}:${arrival.predictedArrival}`}>
-                          <article className="arrival-row mobile-arrival-row">
-                            <span
-                              className="vehicle-line-pill"
-                              style={{
-                                backgroundColor: arrival.routeColor ?? undefined,
-                                color: arrival.routeTextColor ?? undefined,
-                              }}
-                            >
-                              {arrival.lineCode}
-                            </span>
+                  <p className="wait-primary-followups">
+                    {waitCardSummary.next.length > 0
+                      ? `Poi ${waitCardSummary.next.join(' · ')}`
+                      : 'Nessun altro passaggio imminente'}
+                  </p>
+                </div>
+              ) : null}
 
-                            <span className="vehicle-row-copy">
-                              <strong>
-                                {formatDestinationLabel(arrival.headsign ?? arrival.routeName)}
-                              </strong>
-                              <span>{formatTime(arrival.predictedArrival)}</span>
-                            </span>
-
-                            <span className="arrival-meta">
-                              <strong>{formatMinutesUntil(arrival.minutesUntil)}</strong>
-                            </span>
-                          </article>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="empty-state">
-                      Nessun arrivo imminente disponibile per la linea selezionata.
-                    </p>
-                  )}
+              {selectedLine ? (
+                <div className="wait-actions">
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => {
+                      setSelectedLine(null)
+                      setSelectedDirectionKey(null)
+                    }}
+                  >
+                    Cambia linea
+                  </button>
+                  {directionActivity.length > 1 ? (
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={() => setSelectedLine(null)}
+                    >
+                      Cambia direzione
+                    </button>
+                  ) : null}
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => {
+                      setSelectedStopCode(null)
+                      setSelectedStopResponse(null)
+                      setSelectedLine(null)
+                      setSelectedDirectionKey(null)
+                    }}
+                  >
+                    Cambia fermata
+                  </button>
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => setIsMapVisible((value) => !value)}
+                  >
+                    {isMapVisible ? 'Nascondi mappa' : 'Mostra mappa'}
+                  </button>
                 </div>
               ) : null}
 
@@ -1546,6 +1630,91 @@ function App() {
                       </button>
                     ))}
                   </div>
+                </div>
+              ) : null}
+
+              {selectedLine && isMapVisible ? (
+                <div className="map-frame mobile-map-frame">
+                  <MapView
+                    lineLabel={selectedLine}
+                    vehicleMarkers={visibleVehicles}
+                    linePaths={visibleLinePaths}
+                    focusLocation={focusLocation}
+                    nearbyStops={nearbyStops}
+                    showStops={nearbyStops.length > 0}
+                    selectedStopCode={selectedStopCode}
+                    selectedStop={selectedStop}
+                    activeLine={selectedLine}
+                    selectedStopArrivals={selectedStopArrivals}
+                    loadingStopArrivals={loadingStopArrivals}
+                    recenterFocusRequest={recenterFocusRequest}
+                    onSelectStop={handleStopSelect}
+                    onSelectLine={handleLineSelect}
+                  />
+                </div>
+              ) : null}
+
+              {selectedLine ? (
+                <div className="map-detail-section">
+                  <div className="section-head">
+                    <p className="eyebrow">Altre linee in fermata</p>
+                  </div>
+                  <div className="map-line-strip">
+                    {upcomingStopLines
+                      .filter((arrival) => arrival.lineCode !== selectedLine)
+                      .map((arrival) => (
+                        <button
+                          key={`other:${arrival.lineCode}:${arrival.tripId}`}
+                          className="vehicle-line-pill map-line-pill-button"
+                          type="button"
+                          onClick={() => handleLineSelect(arrival.lineCode)}
+                        >
+                          {arrival.lineCode}
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {selectedLine ? (
+                <div className="map-detail-section">
+                  <div className="section-head">
+                    <p className="eyebrow">Arrivi in ordine di attesa</p>
+                  </div>
+                  {selectedLineArrivals.length > 0 ? (
+                    <ul className="arrival-list mobile-arrival-list">
+                      {selectedLineArrivals.map((arrival) => (
+                        <li key={`${arrival.tripId}:${arrival.predictedArrival}`}>
+                          <article className="arrival-row mobile-arrival-row">
+                            <span
+                              className="vehicle-line-pill"
+                              style={{
+                                backgroundColor: arrival.routeColor ?? undefined,
+                                color: arrival.routeTextColor ?? undefined,
+                              }}
+                            >
+                              {arrival.lineCode}
+                            </span>
+
+                            <span className="vehicle-row-copy">
+                              <strong>
+                                {formatDestinationLabel(arrival.headsign ?? arrival.routeName)}
+                              </strong>
+                              <span>{formatTime(arrival.predictedArrival)}</span>
+                            </span>
+
+                            <span className="arrival-meta">
+                              <strong>{formatMinutesUntil(arrival.minutesUntil)}</strong>
+                            </span>
+                          </article>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="empty-state">
+                      Nessun arrivo imminente disponibile per la linea selezionata.
+                    </p>
+                  )}
                 </div>
               ) : null}
 
