@@ -89,6 +89,14 @@ const staticStopsIndexCache = {
     expiresAt: 0,
     promise: null,
 };
+const staticStopsLiteCache = {
+    data: {
+        stopsById: new Map(),
+        stopsByCode: new Map(),
+    },
+    expiresAt: 0,
+    promise: null,
+};
 const realtimeCache = {
     data: null,
     expiresAt: 0,
@@ -800,6 +808,31 @@ async function getStaticStopsIndexData() {
         staticStopsIndexCache.promise = null;
     }
 }
+async function getStaticStopsLiteData() {
+    if (Date.now() < staticStopsLiteCache.expiresAt) {
+        return staticStopsLiteCache.data;
+    }
+    if (staticStopsLiteCache.promise) {
+        return staticStopsLiteCache.promise;
+    }
+    staticStopsLiteCache.promise = (async () => {
+        const archive = await fetchStaticGtfsArchive();
+        const stopsText = archive['stops.txt'];
+        if (!stopsText) {
+            throw new Error('Static GTFS archive is missing stops.txt.');
+        }
+        const data = buildStopsIndex(parseCsvRows(stopsText));
+        staticStopsLiteCache.data = data;
+        staticStopsLiteCache.expiresAt = Date.now() + STATIC_CACHE_TTL_MS;
+        return data;
+    })();
+    try {
+        return await staticStopsLiteCache.promise;
+    }
+    finally {
+        staticStopsLiteCache.promise = null;
+    }
+}
 async function getStaticArrivalsData() {
     if (Date.now() < staticArrivalsCache.expiresAt) {
         return staticArrivalsCache.data;
@@ -889,6 +922,154 @@ async function getStaticArrivalsData() {
     finally {
         staticArrivalsCache.promise = null;
     }
+}
+function resolveModeFromHtml(modeClass) {
+    const normalized = modeClass.trim().toLowerCase();
+    switch (normalized) {
+        case 'tram':
+            return { mode: 'tram', label: 'Tram' };
+        case 'bus':
+            return { mode: 'bus', label: 'Bus' };
+        case 'rail':
+            return { mode: 'rail', label: 'Treno' };
+        case 'metro':
+            return { mode: 'metro', label: 'Metro' };
+        default:
+            return { mode: 'other', label: 'Mezzo' };
+    }
+}
+function decodeHtmlEntities(value) {
+    return value
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+function stripHtmlTags(value) {
+    return decodeHtmlEntities(value.replace(/<[^>]+>/g, ' '));
+}
+function parseOfficialStopMinutes(rawTime, nowMs) {
+    const normalized = stripHtmlTags(rawTime);
+    if (!normalized) {
+        return null;
+    }
+    if (/in arrivo/i.test(normalized)) {
+        return {
+            predictedArrival: new Date(nowMs).toISOString(),
+            minutesUntil: 0,
+        };
+    }
+    const minutesMatch = /(\d+)\s*min/i.exec(normalized);
+    if (minutesMatch) {
+        const minutesUntil = Number.parseInt(minutesMatch[1] ?? '', 10);
+        if (!Number.isNaN(minutesUntil)) {
+            return {
+                predictedArrival: new Date(nowMs + minutesUntil * 60_000).toISOString(),
+                minutesUntil,
+            };
+        }
+    }
+    const timeMatch = /(\d{1,2}):(\d{2})/.exec(normalized);
+    if (!timeMatch) {
+        return null;
+    }
+    const hours = Number.parseInt(timeMatch[1] ?? '', 10);
+    const minutes = Number.parseInt(timeMatch[2] ?? '', 10);
+    if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+        return null;
+    }
+    const arrivalDate = new Date(nowMs);
+    arrivalDate.setSeconds(0, 0);
+    arrivalDate.setHours(hours, minutes, 0, 0);
+    if (arrivalDate.getTime() < nowMs - 5 * 60_000) {
+        arrivalDate.setDate(arrivalDate.getDate() + 1);
+    }
+    return {
+        predictedArrival: arrivalDate.toISOString(),
+        minutesUntil: Math.max(0, Math.ceil((arrivalDate.getTime() - nowMs) / 60_000)),
+    };
+}
+async function fetchOfficialStopArrivals(stopCode, stop) {
+    const stopUrl = `https://www.muoversiatorino.it/stops/gtt%3A${encodeURIComponent(stopCode)}`;
+    const pageResponse = await fetch(stopUrl, {
+        signal: AbortSignal.timeout(15_000),
+        headers: {
+            'user-agent': 'Mozilla/5.0 (compatible; GTT-Radar/1.0; +https://gtt-to.onrender.com)',
+        },
+    });
+    if (!pageResponse.ok) {
+        throw new Error(`Official stop page request failed with ${pageResponse.status}`);
+    }
+    const html = await pageResponse.text();
+    const stopNameMatch = /<span class="h3">([^<]+)<span class="link-arrow">/i.exec(html) ??
+        /<h1 class="h2"><span>Fermata<\/span><\/h1>[\s\S]*?<span class="h3">([^<]+)/i.exec(html);
+    const officialStopName = stopNameMatch ? stripHtmlTags(stopNameMatch[1] ?? '') : stop.stopName;
+    const departureBlocks = html.match(/<p class="departure route-detail-text[\s\S]*?<\/p>/gi) ?? [];
+    const nowMs = Date.now();
+    const arrivals = [];
+    const servicesByKey = new Map();
+    for (const block of departureBlocks) {
+        const lineMatch = /<span class="vehicle-number\s+([a-z-]+)">([^<]+)<\/span>/i.exec(block);
+        const destinationMatch = /<span class="destination"[^>]*>([\s\S]*?)<\/span>/i.exec(block);
+        const timeMatch = /<span[^>]*class="time[^"]*"[^>]*>([\s\S]*?)<\/span>/i.exec(block);
+        if (!lineMatch || !destinationMatch || !timeMatch) {
+            continue;
+        }
+        const lineCode = stripHtmlTags(lineMatch[2] ?? '');
+        const parsedTime = parseOfficialStopMinutes(timeMatch[1] ?? '', nowMs);
+        if (!lineCode || !parsedTime) {
+            continue;
+        }
+        const { mode, label } = resolveModeFromHtml(lineMatch[1] ?? '');
+        const headsign = stripHtmlTags(destinationMatch[1] ?? '') || null;
+        const routeId = `official:${lineCode}`;
+        const serviceKey = buildStopServiceKey(lineCode, mode);
+        servicesByKey.set(serviceKey, {
+            lineCode,
+            mode,
+            modeLabel: label,
+        });
+        arrivals.push({
+            tripId: `${routeId}:${arrivals.length}`,
+            lineCode,
+            routeId,
+            routeName: lineCode,
+            headsign,
+            mode,
+            modeLabel: label,
+            routeColor: null,
+            routeTextColor: null,
+            scheduledArrival: parsedTime.predictedArrival,
+            predictedArrival: parsedTime.predictedArrival,
+            delaySeconds: null,
+            minutesUntil: parsedTime.minutesUntil,
+            vehicleId: null,
+            vehicleLabel: null,
+            vehiclePosition: null,
+            realtime: /realtime/i.test(block) || /In arrivo/i.test(block),
+        });
+    }
+    const renderStop = {
+        ...stop,
+        stopName: officialStopName || stop.stopName,
+        lines: new Set(Array.from(servicesByKey.values()).map((service) => service.lineCode)),
+        modes: new Set(Array.from(servicesByKey.values()).map((service) => service.mode)),
+        services: new Map(Array.from(servicesByKey.entries())),
+    };
+    return {
+        fetchedAt: new Date().toISOString(),
+        feedTimestamp: null,
+        stale: false,
+        warnings: ['Render Free: passaggi fermata ottenuti dalla pagina ufficiale Muoversi a Torino.'],
+        stop: stopToApiRecord(renderStop),
+        relatedStops: [],
+        arrivals: arrivals
+            .sort((left, right) => left.minutesUntil - right.minutesUntil)
+            .slice(0, 18),
+    };
 }
 async function getStaticGtfsData() {
     if (Date.now() < staticCache.expiresAt) {
@@ -1382,9 +1563,11 @@ app.get('/api/stops/nearby', async (request, response, next) => {
             response.status(400).json({ error: 'Latitude and longitude are required.' });
             return;
         }
-        const staticData = await getStaticStopsIndexData();
+        const staticData = IS_RENDER_RUNTIME
+            ? await getStaticStopsLiteData()
+            : await getStaticStopsIndexData();
         const candidates = Array.from(staticData.stopsById.values())
-            .filter((stop) => stop.lines.size > 0)
+            .filter((stop) => (IS_RENDER_RUNTIME ? true : stop.lines.size > 0))
             .map((stop) => ({
             stop,
             distanceMeters: metersBetween(latitude, longitude, stop.latitude, stop.longitude),
@@ -1442,9 +1625,11 @@ app.get('/api/stops/bounds', async (request, response, next) => {
         const maxLongitude = Math.max(east, west);
         const centerLatitude = (minLatitude + maxLatitude) / 2;
         const centerLongitude = (minLongitude + maxLongitude) / 2;
-        const staticData = await getStaticStopsIndexData();
+        const staticData = IS_RENDER_RUNTIME
+            ? await getStaticStopsLiteData()
+            : await getStaticStopsIndexData();
         const stops = Array.from(staticData.stopsById.values())
-            .filter((stop) => stop.lines.size > 0 &&
+            .filter((stop) => (IS_RENDER_RUNTIME || stop.lines.size > 0) &&
             stop.latitude >= minLatitude &&
             stop.latitude <= maxLatitude &&
             stop.longitude >= minLongitude &&
@@ -1478,6 +1663,18 @@ app.get('/api/arrivals', async (request, response, next) => {
         const stopCode = String(request.query.stopCode ?? '').trim();
         if (!stopCode) {
             response.status(400).json({ error: 'stopCode is required.' });
+            return;
+        }
+        if (IS_RENDER_RUNTIME) {
+            const staticStopsData = await getStaticStopsLiteData();
+            const stop = staticStopsData.stopsByCode.get(stopCode);
+            if (!stop) {
+                response.status(404).json({ error: 'Fermata non trovata.' });
+                return;
+            }
+            const payload = await fetchOfficialStopArrivals(stopCode, stop);
+            response.setHeader('Cache-Control', 'no-store');
+            response.json(payload);
             return;
         }
         const staticData = await getStaticArrivalsData();
