@@ -24,6 +24,7 @@ const DEFAULT_NEARBY_LIMIT = 12;
 const RELATED_STOP_RADIUS_METERS = 400;
 const RELATED_STOP_LIMIT = 6;
 const RENDER_OFFICIAL_ARRIVALS_WINDOW_MINUTES = 60;
+const ROME_TIME_ZONE = 'Europe/Rome';
 const TORINO_VIEWBOX = '7.52,45.16,7.83,44.97';
 const TORINO_QUERY_SUFFIX = 'Torino, Piemonte, Italia';
 const IS_RENDER_RUNTIME = Boolean(process.env.RENDER ||
@@ -1062,6 +1063,46 @@ function decodeHtmlEntities(value) {
 function stripHtmlTags(value) {
     return decodeHtmlEntities(value.replace(/<[^>]+>/g, ' '));
 }
+function getTimeZoneOffsetMinutes(timeZone, date) {
+    const formatter = new Intl.DateTimeFormat('en-GB', {
+        timeZone,
+        timeZoneName: 'shortOffset',
+    });
+    const offsetValue = formatter.formatToParts(date).find((part) => part.type === 'timeZoneName')?.value ?? 'GMT';
+    const match = /GMT([+-]\d{1,2})(?::?(\d{2}))?/i.exec(offsetValue);
+    if (!match) {
+        return 0;
+    }
+    const hours = Number.parseInt(match[1] ?? '0', 10);
+    const minutes = Number.parseInt(match[2] ?? '0', 10);
+    const sign = hours >= 0 ? 1 : -1;
+    return hours * 60 + sign * minutes;
+}
+function getRomeDateParts(nowMs) {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone: ROME_TIME_ZONE,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    });
+    const parts = formatter.formatToParts(new Date(nowMs));
+    return {
+        year: Number.parseInt(parts.find((part) => part.type === 'year')?.value ?? '0', 10),
+        month: Number.parseInt(parts.find((part) => part.type === 'month')?.value ?? '0', 10),
+        day: Number.parseInt(parts.find((part) => part.type === 'day')?.value ?? '0', 10),
+    };
+}
+function buildRomeLocalTimestamp(year, month, day, hours, minutes) {
+    let utcTimestamp = Date.UTC(year, month - 1, day, hours, minutes, 0, 0);
+    let offsetMinutes = getTimeZoneOffsetMinutes(ROME_TIME_ZONE, new Date(utcTimestamp));
+    utcTimestamp = Date.UTC(year, month - 1, day, hours, minutes, 0, 0) - offsetMinutes * 60_000;
+    const resolvedOffsetMinutes = getTimeZoneOffsetMinutes(ROME_TIME_ZONE, new Date(utcTimestamp));
+    if (resolvedOffsetMinutes !== offsetMinutes) {
+        utcTimestamp =
+            Date.UTC(year, month - 1, day, hours, minutes, 0, 0) - resolvedOffsetMinutes * 60_000;
+    }
+    return utcTimestamp;
+}
 function parseOfficialStopMinutes(rawTime, nowMs) {
     const normalized = stripHtmlTags(rawTime);
     if (!normalized) {
@@ -1092,15 +1133,14 @@ function parseOfficialStopMinutes(rawTime, nowMs) {
     if (Number.isNaN(hours) || Number.isNaN(minutes)) {
         return null;
     }
-    const arrivalDate = new Date(nowMs);
-    arrivalDate.setSeconds(0, 0);
-    arrivalDate.setHours(hours, minutes, 0, 0);
-    if (arrivalDate.getTime() < nowMs - 5 * 60_000) {
-        arrivalDate.setDate(arrivalDate.getDate() + 1);
+    const romeNowDateParts = getRomeDateParts(nowMs);
+    let arrivalTimestamp = buildRomeLocalTimestamp(romeNowDateParts.year, romeNowDateParts.month, romeNowDateParts.day, hours, minutes);
+    if (arrivalTimestamp < nowMs - 5 * 60_000) {
+        arrivalTimestamp += 24 * 60 * 60_000;
     }
     return {
-        predictedArrival: arrivalDate.toISOString(),
-        minutesUntil: Math.max(0, Math.ceil((arrivalDate.getTime() - nowMs) / 60_000)),
+        predictedArrival: new Date(arrivalTimestamp).toISOString(),
+        minutesUntil: Math.max(0, Math.ceil((arrivalTimestamp - nowMs) / 60_000)),
     };
 }
 async function fetchOfficialStopArrivals(stopCode, stop) {
