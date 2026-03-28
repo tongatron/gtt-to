@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from 'react'
@@ -49,7 +50,7 @@ interface StopSummaryLine {
   lineCode: string
   destination: string
   directionKey: string
-  times: string[]
+  minutes: number[]
 }
 
 interface WaitCardSummary {
@@ -478,6 +479,8 @@ function App() {
   const [nowTickMs, setNowTickMs] = useState(() => Date.now())
   // Wait-first UI: keep the map optional until the user needs spatial context.
   const [isMapVisible, setIsMapVisible] = useState(false)
+  const waitSectionRef = useRef<HTMLElement | null>(null)
+  const lastScrolledWaitKeyRef = useRef<string | null>(null)
 
   const loadNearbyStops = useCallback(async (location: FocusLocation, signal?: AbortSignal) => {
     try {
@@ -672,8 +675,104 @@ function App() {
     setEntryMode('location')
     setLoadingLocation(true)
 
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
+    const requestPosition = (options: PositionOptions) =>
+      new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, options)
+      })
+
+    const requestWatchedPosition = (options: PositionOptions, timeoutMs: number) =>
+      new Promise<GeolocationPosition>((resolve, reject) => {
+        let settled = false
+        const timeoutId = window.setTimeout(() => {
+          if (settled) {
+            return
+          }
+
+          settled = true
+          navigator.geolocation.clearWatch(watchId)
+          reject(
+            new DOMException(
+              'Tempo scaduto durante la geolocalizzazione.',
+              'TimeoutError',
+            ),
+          )
+        }, timeoutMs)
+
+        const watchId = navigator.geolocation.watchPosition(
+          (position) => {
+            if (settled) {
+              return
+            }
+
+            settled = true
+            window.clearTimeout(timeoutId)
+            navigator.geolocation.clearWatch(watchId)
+            resolve(position)
+          },
+          (error) => {
+            if (settled) {
+              return
+            }
+
+            settled = true
+            window.clearTimeout(timeoutId)
+            navigator.geolocation.clearWatch(watchId)
+            reject(error)
+          },
+          options,
+        )
+      })
+
+    void (async () => {
+      try {
+        setError(null)
+
+        let position: GeolocationPosition
+
+        try {
+          position = await requestPosition({
+            enableHighAccuracy: false,
+            timeout: 8_000,
+            maximumAge: 10 * 60_000,
+          })
+        } catch (geoError) {
+          const geolocationError = geoError as GeolocationPositionError | DOMException
+          const isRetryable =
+            geolocationError instanceof DOMException ||
+            geolocationError.code === geolocationError.TIMEOUT ||
+            geolocationError.code === geolocationError.POSITION_UNAVAILABLE
+
+          if (!isRetryable) {
+            throw geolocationError
+          }
+
+          try {
+            position = await requestPosition({
+              enableHighAccuracy: false,
+              timeout: 15_000,
+              maximumAge: 0,
+            })
+          } catch (fallbackError) {
+            const nextError = fallbackError as GeolocationPositionError | DOMException
+            const canUseWatchFallback =
+              nextError instanceof DOMException ||
+              nextError.code === nextError.TIMEOUT ||
+              nextError.code === nextError.POSITION_UNAVAILABLE
+
+            if (!canUseWatchFallback) {
+              throw nextError
+            }
+
+            position = await requestWatchedPosition(
+              {
+                enableHighAccuracy: false,
+                maximumAge: 0,
+              },
+              20_000,
+            )
+          }
+        }
+
         const location: FocusLocation = {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
@@ -682,20 +781,21 @@ function App() {
         }
 
         setRecenterFocusRequest((value) => value + 1)
-        void loadNearbyStops(location).finally(() => {
-          setLoadingLocation(false)
-        })
-      },
-      (geoError) => {
+        await loadNearbyStops(location)
+      } catch (geoError) {
+        const geolocationError = geoError as GeolocationPositionError | DOMException
+        const errorMessage =
+          geolocationError instanceof DOMException
+            ? 'Nessuna posizione disponibile dal browser. Su Mac controlla anche i servizi di localizzazione di sistema e riprova.'
+            : geolocationError.code === geolocationError.PERMISSION_DENIED
+              ? 'Permesso negato dal browser o da macOS.'
+              : `Geolocalizzazione non riuscita: ${geolocationError.message}`
+
+        setError(errorMessage)
+      } finally {
         setLoadingLocation(false)
-        setError(`Geolocalizzazione non riuscita: ${geoError.message}`)
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 10_000,
-        maximumAge: 60_000,
-      },
-    )
+      }
+    })()
   }, [loadNearbyStops])
 
   const handleAddressSubmit = useCallback(
@@ -759,6 +859,10 @@ function App() {
       try {
         setEntryMode('stop')
         setSearchingStopCode(true)
+        setSelectedLine(null)
+        setSelectedDirectionKey(null)
+        setVehiclesResponse(null)
+        setLinePathsResponse(null)
         const payload = await loadStopArrivals(normalizedStopCode)
 
         if (!payload) {
@@ -784,6 +888,10 @@ function App() {
 
   const handleStopSelect = useCallback(
     (stopCode: string) => {
+      setSelectedLine(null)
+      setSelectedDirectionKey(null)
+      setVehiclesResponse(null)
+      setLinePathsResponse(null)
       void loadStopArrivals(stopCode)
     },
     [loadStopArrivals],
@@ -1052,12 +1160,14 @@ function App() {
       const destination = formatDestinationLabel(arrival.headsign ?? arrival.routeName)
       const directionKey = normalizeDirectionKey(arrival.headsign ?? arrival.routeName)
       const key = `${arrival.lineCode}:${directionKey}`
-      const timeLabel = formatTime(arrival.predictedArrival)
       const existingSummary = summaries.get(key)
 
       if (existingSummary) {
-        if (!existingSummary.times.includes(timeLabel) && existingSummary.times.length < 3) {
-          existingSummary.times.push(timeLabel)
+        if (
+          !existingSummary.minutes.includes(arrival.minutesUntil) &&
+          existingSummary.minutes.length < 3
+        ) {
+          existingSummary.minutes.push(arrival.minutesUntil)
         }
         return
       }
@@ -1067,7 +1177,7 @@ function App() {
         lineCode: arrival.lineCode,
         destination,
         directionKey,
-        times: [timeLabel],
+        minutes: [arrival.minutesUntil],
       })
     })
 
@@ -1253,6 +1363,29 @@ function App() {
     setIsMapVisible(false)
   }, [selectedStopCode, selectedLine])
 
+  useEffect(() => {
+    if (!selectedStopCode) {
+      return
+    }
+
+    const nextWaitKey = `${selectedStopCode}:${selectedLine ?? ''}`
+    if (lastScrolledWaitKeyRef.current === nextWaitKey) {
+      return
+    }
+
+    lastScrolledWaitKeyRef.current = nextWaitKey
+    const frameId = window.requestAnimationFrame(() => {
+      waitSectionRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      })
+    })
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+    }
+  }, [selectedLine, selectedStopCode])
+
   const waitCardSummary = useMemo<WaitCardSummary>(() => {
     if (selectedLineArrivals.length === 0) {
       return {
@@ -1295,12 +1428,27 @@ function App() {
     return `${visibleVehicles.length} mezzi live trovati per la linea ${selectedLine}.`
   }, [entryMode, loadingVehicles, selectedLine, selectedStop, simulationMode, visibleVehicles.length])
 
+  const shouldShowMapSection = Boolean(
+    selectedStop || (focusLocation?.kind === 'address' && nearbyStops.length > 0),
+  )
+
   return (
     <div className="app-shell simplified-shell">
       <section className="mobile-layout">
         <header className="mobile-card hero-mobile-card">
-          <div className="hero-copy compact-hero-copy">
-            <h1>GTT Radar</h1>
+          <div className="home-topbar">
+            <div className="hero-copy compact-hero-copy">
+              <h1>GTT Radar</h1>
+            </div>
+            <button
+              className={`ghost-button simulation-toggle${entryMode === 'simulation' ? ' is-active' : ''}`}
+              type="button"
+              onClick={() => {
+                void handleStartSimulation()
+              }}
+            >
+              Simulazione
+            </button>
           </div>
 
           <div className="summary-strip">
@@ -1314,49 +1462,43 @@ function App() {
 
           <div className="entry-grid">
             {recentSelections.length > 0 ? (
-              <div className="entry-form-card recent-selection-card">
-                <strong>Riprendi da una selezione recente</strong>
-                <span>Fino a 3 combinazioni salvate in cache sul dispositivo.</span>
-                <div className="recent-selection-grid">
-                  {recentSelections.map((selection) => (
-                    <button
-                      key={`${selection.stopCode}:${selection.lineCode}`}
-                      className="line-choice-button recent-selection-button"
-                      type="button"
-                      onClick={() => void handleRecentSelection(selection)}
-                    >
-                      <strong>Linea {selection.lineCode}</strong>
-                      <span>{selection.stopName}</span>
-                      <span>Fermata {selection.stopCode}</span>
-                    </button>
-                  ))}
+              <div className="recent-selection-card compact-recent-card">
+                <div className="compact-recent-row">
+                  <strong>Recenti</strong>
+                  <div className="compact-recent-list">
+                    {recentSelections.map((selection) => (
+                      <button
+                        key={`${selection.stopCode}:${selection.lineCode}`}
+                        className="recent-selection-button compact-recent-button"
+                        type="button"
+                        onClick={() => void handleRecentSelection(selection)}
+                      >
+                        <strong>{selection.stopCode}</strong>
+                        <span>&middot;</span>
+                        <span>{selection.lineCode}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             ) : null}
 
             <button
-              className={`entry-button${entryMode === 'location' ? ' is-active' : ''}`}
+              className={`entry-button location-entry-button${entryMode === 'location' ? ' is-active' : ''}`}
               type="button"
               onClick={handleUseMyLocation}
               disabled={loadingLocation}
+              aria-label={loadingLocation ? 'Localizzo' : 'Usa la mia posizione'}
+              title={loadingLocation ? 'Localizzo...' : 'Usa la mia posizione'}
             >
-              <strong>{loadingLocation ? 'Localizzo...' : 'Usa la mia posizione'}</strong>
-              <span>Ti mostra sulla mappa e carica le fermate vicine.</span>
-            </button>
-
-            <button
-              className={`entry-button${entryMode === 'simulation' ? ' is-active' : ''}`}
-              type="button"
-              onClick={() => {
-                void handleStartSimulation()
-              }}
-            >
-              <strong>Modalita simulazione</strong>
-              <span>Utente alla fermata 240 con linea 4 e mezzi simulati in movimento.</span>
+              <span className="location-entry-icon" aria-hidden="true">
+                ◎
+              </span>
+              <strong>{loadingLocation ? 'Localizzo…' : 'Localizzazione'}</strong>
             </button>
 
             <form
-              className={`entry-form-card${entryMode === 'stop' ? ' is-active' : ''}`}
+              className={`entry-form-card compact-entry-form${entryMode === 'stop' ? ' is-active' : ''}`}
               onSubmit={handleStopCodeSubmit}
             >
               <label className="search-field">
@@ -1376,7 +1518,7 @@ function App() {
             </form>
 
             <form
-              className={`entry-form-card${entryMode === 'address' ? ' is-active' : ''}`}
+              className={`entry-form-card compact-entry-form${entryMode === 'address' ? ' is-active' : ''}`}
               onSubmit={handleAddressSubmit}
             >
               <label className="search-field">
@@ -1395,25 +1537,11 @@ function App() {
             </form>
           </div>
 
-          <div className="flow-actions">
-            <button className="ghost-button" type="button" onClick={handleResetFlow}>
-              Riparti da zero
-            </button>
-            {focusLocation?.kind === 'user' ? (
-              <button
-                className="ghost-button"
-                type="button"
-                onClick={() => setRecenterFocusRequest((value) => value + 1)}
-              >
-                Torna alla mia posizione
-              </button>
-            ) : null}
-          </div>
-
           {error ? <p className="error-box">{error}</p> : null}
         </header>
 
-        <section className="mobile-card mobile-map-card">
+        {shouldShowMapSection ? (
+        <section ref={waitSectionRef} className="mobile-card mobile-map-card">
           <div className="map-panel-header compact-map-header">
             <div>
               <p className="map-label">Mappa attesa</p>
@@ -1422,10 +1550,10 @@ function App() {
                   ? `Linea ${selectedLine} verso la fermata`
                   : selectedStop
                     ? `Fermata ${selectedStop.stopCode}`
-                    : 'Scegli come vuoi partire'}
+                    : 'Fermate vicine all’indirizzo'}
               </h2>
             </div>
-            {selectedStop ? (
+            {selectedStop || focusLocation?.kind === 'address' ? (
               <span className="live-update-badge">
                 <span className="live-update-dot" aria-hidden="true"></span>
                 LIVE
@@ -1456,184 +1584,35 @@ function App() {
                       }
                     >
                       <div className="stop-summary-line">
-                        <strong>Linea {summary.lineCode}</strong>
-                        <span>{summary.destination}</span>
+                        <div className="stop-summary-route">
+                          <strong>Linea {summary.lineCode}</strong>
+                          <span>&rarr; {summary.destination}</span>
+                        </div>
+                        <div className="stop-summary-upcoming">
+                          <small>Attesa</small>
+                          <div className="stop-summary-minute-list">
+                            {summary.minutes.map((value) => (
+                              <span key={`${summary.key}:${value}`}>{formatMinutesUntil(value)}</span>
+                            ))}
+                          </div>
+                        </div>
                       </div>
-                      <p className="stop-summary-times">
-                        Orario: {summary.times.join(' ')}
-                      </p>
                     </button>
                   ))}
                 </div>
               ) : null}
-            </div>
-          ) : null}
 
-          {selectedStop && upcomingStopLines.length > 0 ? (
-            <div className="map-line-strip">
-              {upcomingStopLines.map((arrival) => (
+              <div className="map-option-row">
                 <button
-                  key={`${arrival.lineCode}:${arrival.tripId}`}
-                  className={`vehicle-line-pill map-line-pill-button${
-                    selectedLine === arrival.lineCode ? ' is-active' : ''
-                  }`}
+                  className="ghost-button map-toggle-button"
                   type="button"
-                  onClick={() => handleLineSelect(arrival.lineCode)}
+                  onClick={() => setIsMapVisible((value) => !value)}
                 >
-                  {arrival.lineCode}
+                  {isMapVisible ? 'Nascondi mappa' : 'Mostra mappa'}
                 </button>
-              ))}
-            </div>
-          ) : null}
+              </div>
 
-          {selectedStop ? (
-            <div className="map-wait-panel">
-              {!selectedLine ? (
-                <div className="map-detail-section">
-                  <div className="section-head">
-                    <p className="eyebrow">Scegli linea e direzione</p>
-                  </div>
-                  {stopSummaryLines.length > 0 ? (
-                    <div className="wait-choice-list">
-                      {stopSummaryLines.map((summary) => (
-                        <button
-                          key={summary.key}
-                          className="wait-choice-card"
-                          type="button"
-                          onClick={() =>
-                            handleLineDirectionSelect(summary.lineCode, summary.directionKey)
-                          }
-                        >
-                          <div className="wait-choice-head">
-                            <strong>Linea {summary.lineCode}</strong>
-                            <span>{summary.destination}</span>
-                          </div>
-                          <p className="wait-choice-meta">
-                            {summary.times[0] ? formatMinutesUntil(
-                              stopWideArrivals.find((arrival) => arrival.lineCode === summary.lineCode && normalizeDirectionKey(arrival.headsign ?? arrival.routeName) === summary.directionKey)?.minutesUntil ?? 0,
-                            ) : 'n/d'}
-                          </p>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="empty-state">Nessun passaggio disponibile per questa fermata.</p>
-                  )}
-                </div>
-              ) : null}
-
-              {selectedLine ? (
-                <div className="wait-primary-card">
-                  <p className="eyebrow">Attesa</p>
-                  <div className="wait-primary-head">
-                    <div>
-                      <strong>Linea {selectedLine}</strong>
-                      <span>
-                        {activeDirectionChoice?.label ?? 'Direzione non disponibile'}
-                      </span>
-                    </div>
-                    <span className="wait-primary-minutes">
-                      {waitCardSummary.primary
-                        ? formatMinutesUntil(waitCardSummary.primary.minutesUntil)
-                        : 'n/d'}
-                    </span>
-                  </div>
-                  <p className="wait-primary-followups">
-                    {waitCardSummary.next.length > 0
-                      ? `Poi ${waitCardSummary.next.join(' · ')}`
-                      : 'Nessun altro passaggio imminente'}
-                  </p>
-                </div>
-              ) : null}
-
-              {selectedLine ? (
-                <div className="wait-actions">
-                  <button
-                    className="ghost-button"
-                    type="button"
-                    onClick={() => {
-                      setSelectedLine(null)
-                      setSelectedDirectionKey(null)
-                    }}
-                  >
-                    Cambia linea
-                  </button>
-                  {directionActivity.length > 1 ? (
-                    <button
-                      className="ghost-button"
-                      type="button"
-                      onClick={() => setSelectedLine(null)}
-                    >
-                      Cambia direzione
-                    </button>
-                  ) : null}
-                  <button
-                    className="ghost-button"
-                    type="button"
-                    onClick={() => {
-                      setSelectedStopCode(null)
-                      setSelectedStopResponse(null)
-                      setSelectedLine(null)
-                      setSelectedDirectionKey(null)
-                    }}
-                  >
-                    Cambia fermata
-                  </button>
-                  <button
-                    className="ghost-button"
-                    type="button"
-                    onClick={() => setIsMapVisible((value) => !value)}
-                  >
-                    {isMapVisible ? 'Nascondi mappa' : 'Mostra mappa'}
-                  </button>
-                </div>
-              ) : null}
-
-              {selectedLine && directionActivity.length > 1 ? (
-                <div className="map-detail-section">
-                  <p className="eyebrow">Direzione selezionata</p>
-                  <div className="line-choice-grid direction-switch-grid">
-                    {directionActivity.map((choice) => (
-                      <button
-                        key={choice.key}
-                        className={`line-choice-button${
-                          selectedDirectionKey === choice.key ? ' is-active' : ''
-                        }`}
-                        type="button"
-                        onClick={() => setSelectedDirectionKey(choice.key)}
-                      >
-                        <strong>Direzione</strong>
-                        <span>{choice.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {selectedLine && directionActivity.length > 0 ? (
-                <div className="map-detail-section">
-                  <p className="eyebrow">Direzioni attive adesso</p>
-                  <div className="direction-activity-list">
-                    {directionActivity.map((choice) => (
-                      <button
-                        key={choice.key}
-                        className={`direction-activity-card${
-                          selectedDirectionKey === choice.key ? ' is-active' : ''
-                        }`}
-                        type="button"
-                        onClick={() => setSelectedDirectionKey(choice.key)}
-                      >
-                        <strong>{choice.label}</strong>
-                        <span>
-                          {choice.arrivalsCount} arrivi · {choice.vehiclesCount} mezzi live
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {selectedLine && isMapVisible ? (
+              {isMapVisible ? (
                 <div className="map-frame mobile-map-frame">
                   <MapView
                     lineLabel={selectedLine}
@@ -1653,74 +1632,32 @@ function App() {
                   />
                 </div>
               ) : null}
-
-              {selectedLine ? (
-                <div className="map-detail-section">
-                  <div className="section-head">
-                    <p className="eyebrow">Altre linee in fermata</p>
-                  </div>
-                  <div className="map-line-strip">
-                    {upcomingStopLines
-                      .filter((arrival) => arrival.lineCode !== selectedLine)
-                      .map((arrival) => (
-                        <button
-                          key={`other:${arrival.lineCode}:${arrival.tripId}`}
-                          className="vehicle-line-pill map-line-pill-button"
-                          type="button"
-                          onClick={() => handleLineSelect(arrival.lineCode)}
-                        >
-                          {arrival.lineCode}
-                        </button>
-                      ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {selectedLine ? (
-                <div className="map-detail-section">
-                  <div className="section-head">
-                    <p className="eyebrow">Arrivi in ordine di attesa</p>
-                  </div>
-                  {selectedLineArrivals.length > 0 ? (
-                    <ul className="arrival-list mobile-arrival-list">
-                      {selectedLineArrivals.map((arrival) => (
-                        <li key={`${arrival.tripId}:${arrival.predictedArrival}`}>
-                          <article className="arrival-row mobile-arrival-row">
-                            <span
-                              className="vehicle-line-pill"
-                              style={{
-                                backgroundColor: arrival.routeColor ?? undefined,
-                                color: arrival.routeTextColor ?? undefined,
-                              }}
-                            >
-                              {arrival.lineCode}
-                            </span>
-
-                            <span className="vehicle-row-copy">
-                              <strong>
-                                {formatDestinationLabel(arrival.headsign ?? arrival.routeName)}
-                              </strong>
-                              <span>{formatTime(arrival.predictedArrival)}</span>
-                            </span>
-
-                            <span className="arrival-meta">
-                              <strong>{formatMinutesUntil(arrival.minutesUntil)}</strong>
-                            </span>
-                          </article>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="empty-state">
-                      Nessun arrivo imminente disponibile per la linea selezionata.
-                    </p>
-                  )}
-                </div>
-              ) : null}
-
             </div>
           ) : null}
+
+          {!selectedStop ? (
+            <div className="map-frame mobile-map-frame">
+              <MapView
+                lineLabel={selectedLine}
+                vehicleMarkers={visibleVehicles}
+                linePaths={visibleLinePaths}
+                focusLocation={focusLocation}
+                nearbyStops={nearbyStops}
+                showStops={nearbyStops.length > 0}
+                selectedStopCode={selectedStopCode}
+                selectedStop={selectedStop}
+                activeLine={selectedLine}
+                selectedStopArrivals={selectedStopArrivals}
+                loadingStopArrivals={loadingStopArrivals}
+                recenterFocusRequest={recenterFocusRequest}
+                onSelectStop={handleStopSelect}
+                onSelectLine={handleLineSelect}
+              />
+            </div>
+          ) : null}
+
         </section>
+        ) : null}
 
       </section>
     </div>
