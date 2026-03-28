@@ -547,6 +547,9 @@ async function getFeedMessageType() {
             const protoCandidates = [
                 path.join(serverDir, 'gtfs-realtime.proto'),
                 path.resolve(serverDir, '../server/gtfs-realtime.proto'),
+                path.resolve(projectRootDir, 'server/gtfs-realtime.proto'),
+                path.resolve(process.cwd(), 'server/gtfs-realtime.proto'),
+                path.resolve(process.cwd(), 'gtfs-realtime.proto'),
             ];
             const protoPath = protoCandidates.find((candidate) => existsSync(candidate));
             if (!protoPath) {
