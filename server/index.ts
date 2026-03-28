@@ -1126,12 +1126,19 @@ function buildStopsIndex(rows: Array<Record<string, string>>): StaticStopsIndexD
   }
 }
 
-function populateStopServicesFromStopTimes(
+async function yieldToEventLoop(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve)
+  })
+}
+
+async function scanStopTimesFile(
   stopTimesFile: Uint8Array,
   tripsById: Map<string, TripRecord>,
   routesById: Map<string, RouteRecord>,
   stopsById: Map<string, StopRecord>,
-) {
+  onSchedule?: (schedule: StopScheduleRecord, stopId: string) => void,
+): Promise<void> {
   const text = strFromU8(stopTimesFile)
   const firstNewlineIndex = text.indexOf('\n')
   const headerLine = (
@@ -1142,12 +1149,15 @@ function populateStopServicesFromStopTimes(
   const headers = headerLine.split(',').map(stripCsvCell)
   const tripIdIndex = headers.indexOf('trip_id')
   const stopIdIndex = headers.indexOf('stop_id')
+  const arrivalTimeIndex = headers.indexOf('arrival_time')
+  const stopSequenceIndex = headers.indexOf('stop_sequence')
 
   if (tripIdIndex === -1 || stopIdIndex === -1) {
     return
   }
 
   let lineStart = firstNewlineIndex === -1 ? text.length : firstNewlineIndex + 1
+  let processedRows = 0
   while (lineStart < text.length) {
     let lineEnd = text.indexOf('\n', lineStart)
     if (lineEnd === -1) {
@@ -1166,26 +1176,46 @@ function populateStopServicesFromStopTimes(
     const stopId = columns[stopIdIndex]
 
     if (!tripId || !stopId) {
+      processedRows += 1
+      if (processedRows % 5_000 === 0) {
+        await yieldToEventLoop()
+      }
       continue
     }
 
     const tripRecord = tripsById.get(tripId)
     if (!tripRecord) {
+      processedRows += 1
+      if (processedRows % 5_000 === 0) {
+        await yieldToEventLoop()
+      }
       continue
     }
 
     const routeRecord = routesById.get(tripRecord.routeId)
     if (!routeRecord) {
+      processedRows += 1
+      if (processedRows % 5_000 === 0) {
+        await yieldToEventLoop()
+      }
       continue
     }
 
     const { mode, label } = resolveRouteMode(routeRecord.routeTypeRaw)
     if (!SUPPORTED_SURFACE_MODES.has(mode)) {
+      processedRows += 1
+      if (processedRows % 5_000 === 0) {
+        await yieldToEventLoop()
+      }
       continue
     }
 
     const stopRecord = stopsById.get(stopId)
     if (!stopRecord) {
+      processedRows += 1
+      if (processedRows % 5_000 === 0) {
+        await yieldToEventLoop()
+      }
       continue
     }
 
@@ -1196,6 +1226,29 @@ function populateStopServicesFromStopTimes(
       mode,
       modeLabel: label,
     })
+
+    if (onSchedule && arrivalTimeIndex !== -1 && stopSequenceIndex !== -1) {
+      const arrivalTime = columns[arrivalTimeIndex]
+      const stopSequenceRaw = columns[stopSequenceIndex]
+      if (arrivalTime && stopSequenceRaw) {
+        const stopSequence = Number.parseInt(stopSequenceRaw, 10)
+        if (!Number.isNaN(stopSequence)) {
+          onSchedule(
+            {
+              tripId,
+              stopSequence,
+              arrivalTime,
+            },
+            stopId,
+          )
+        }
+      }
+    }
+
+    processedRows += 1
+    if (processedRows % 5_000 === 0) {
+      await yieldToEventLoop()
+    }
   }
 }
 
@@ -1370,7 +1423,7 @@ async function getStaticStopsIndexData(): Promise<StaticStopsIndexData> {
     const tripsById = buildTripsById(parseCsvRows(tripsText))
     const data = buildStopsIndex(parseCsvRows(stopsText))
 
-    populateStopServicesFromStopTimes(
+    await scanStopTimesFile(
       stopTimesText,
       tripsById,
       routesById,
@@ -1414,7 +1467,6 @@ async function getStaticArrivalsData(): Promise<StaticArrivalsData> {
     const routesById = buildRoutesById(parseCsvRows(routesText))
     const tripsById = buildTripsById(parseCsvRows(tripsText))
     const stopsIndex = buildStopsIndex(parseCsvRows(stopsText))
-    const stopTimesRows = parseCsvRows(stopTimesText)
     const calendarRows = parseCsvRows(calendarText)
     const calendarDatesRows = calendarDatesText
       ? parseCsvRows(calendarDatesText)
@@ -1463,55 +1515,17 @@ async function getStaticArrivalsData(): Promise<StaticArrivalsData> {
       calendarDateExceptionsByServiceId.set(serviceId, serviceExceptions)
     }
 
-    for (const row of stopTimesRows) {
-      const tripId = row.trip_id?.trim()
-      const stopId = row.stop_id?.trim()
-      const arrivalTime = row.arrival_time?.trim()
-      const stopSequenceRaw = row.stop_sequence?.trim()
-
-      if (!tripId || !stopId || !arrivalTime || !stopSequenceRaw) {
-        continue
-      }
-
-      const tripRecord = tripsById.get(tripId)
-      if (!tripRecord) {
-        continue
-      }
-
-      const routeRecord = routesById.get(tripRecord.routeId)
-      if (!routeRecord) {
-        continue
-      }
-
-      const { mode, label } = resolveRouteMode(routeRecord.routeTypeRaw)
-      if (!SUPPORTED_SURFACE_MODES.has(mode)) {
-        continue
-      }
-
-      const stopSequence = Number.parseInt(stopSequenceRaw, 10)
-      if (Number.isNaN(stopSequence)) {
-        continue
-      }
-
-      const schedules = stopSchedulesByStopId.get(stopId) ?? []
-      schedules.push({
-        tripId,
-        stopSequence,
-        arrivalTime,
-      })
-      stopSchedulesByStopId.set(stopId, schedules)
-
-      const stopRecord = stopsIndex.stopsById.get(stopId)
-      if (stopRecord) {
-        stopRecord.modes.add(mode)
-        stopRecord.lines.add(routeRecord.routeShortName)
-        stopRecord.services.set(buildStopServiceKey(routeRecord.routeShortName, mode), {
-          lineCode: routeRecord.routeShortName,
-          mode,
-          modeLabel: label,
-        })
-      }
-    }
+    await scanStopTimesFile(
+      stopTimesText,
+      tripsById,
+      routesById,
+      stopsIndex.stopsById,
+      (schedule, stopId) => {
+        const schedules = stopSchedulesByStopId.get(stopId) ?? []
+        schedules.push(schedule)
+        stopSchedulesByStopId.set(stopId, schedules)
+      },
+    )
 
     const data: StaticArrivalsData = {
       routesById,
