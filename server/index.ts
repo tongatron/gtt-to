@@ -1835,7 +1835,11 @@ async function fetchOfficialStopArrivals(
   for (const block of departureBlocks) {
     const lineMatch = /<span class="vehicle-number\s+([a-z-]+)">([^<]+)<\/span>/i.exec(block)
     const destinationMatch = /<span class="destination"[^>]*>([\s\S]*?)<\/span>/i.exec(block)
-    const timeMatch = /<span[^>]*class="time[^"]*"[^>]*>([\s\S]*?)<\/span>/i.exec(block)
+    const timeMatch =
+      /<span[^>]*class="time[^"]*"[^>]*>([\s\S]*?)<\/span>\s*<span class="route-number">/i.exec(
+        block,
+      ) ??
+      /<span[^>]*class="time[^"]*"[^>]*>([\s\S]*?)$/i.exec(block)
 
     if (!lineMatch || !destinationMatch || !timeMatch) {
       continue
