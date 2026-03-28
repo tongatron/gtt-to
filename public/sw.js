@@ -1,8 +1,7 @@
-const CACHE_VERSION = 'gtt-radar-v2'
+const CACHE_VERSION = 'gtt-radar-v3'
 const APP_BASE_URL = new URL('./', self.location.href)
 const SHELL_CACHE = `${CACHE_VERSION}-shell`
 const ASSET_CACHE = `${CACHE_VERSION}-assets`
-const DATA_CACHE = `${CACHE_VERSION}-data`
 const TILE_CACHE = `${CACHE_VERSION}-tiles`
 
 const APP_INDEX_URL = new URL('index.html', APP_BASE_URL).toString()
@@ -139,15 +138,6 @@ self.addEventListener('fetch', (event) => {
 
   if (request.mode === 'navigate') {
     event.respondWith(networkFirst(request, SHELL_CACHE, APP_INDEX_URL))
-    return
-  }
-
-  if (
-    requestUrl.origin === self.location.origin &&
-    requestUrl.pathname.startsWith('/api/') &&
-    !requestUrl.pathname.startsWith('/api/health')
-  ) {
-    event.respondWith(networkFirst(request, DATA_CACHE))
     return
   }
 
