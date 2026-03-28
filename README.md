@@ -1,6 +1,10 @@
-# Torino Line Radar
+# GTT Radar
 
-App locale per visualizzare i mezzi GTT live sulla mappa partendo direttamente dal numero o codice linea.
+App mobile-first per controllare attese, fermate e mezzi GTT live sulla mappa.
+
+## Demo
+
+- demo pubblica: `https://gtt-to.onrender.com`
 
 ## Stack
 
@@ -49,9 +53,17 @@ Questa e la modalita giusta per provare la PWA, perche il service worker viene r
 
 ## Come usare l'app
 
-1. Inserisci una linea GTT, per esempio `4` o `M1N`
-2. L'app carica i mezzi live disponibili
-3. La mappa mostra i veicoli con indicatore di direzione
+1. Parti da localizzazione, numero fermata o indirizzo
+2. Seleziona una fermata
+3. Visualizza i prossimi passaggi della fermata
+4. Scegli una linea per entrare nella vista attesa
+5. Controlla mappa, mezzi live, direzioni attive e tempi di arrivo
+
+## Deploy
+
+- demo Render: `https://gtt-to.onrender.com`
+- il progetto e ottimizzato per Render Free
+- il backend usa cache GTFS alleggerite per ridurre memoria e timeout del health check
 
 ## Fonti dati
 
