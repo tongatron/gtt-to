@@ -57,6 +57,19 @@ const staticCache = {
     expiresAt: 0,
     promise: null,
 };
+const staticArrivalsCache = {
+    data: {
+        routesById: new Map(),
+        tripsById: new Map(),
+        stopsById: new Map(),
+        stopsByCode: new Map(),
+        stopSchedulesByStopId: new Map(),
+        calendarsByServiceId: new Map(),
+        calendarDateExceptionsByServiceId: new Map(),
+    },
+    expiresAt: 0,
+    promise: null,
+};
 const staticRoutesTripsCache = {
     data: {
         routesById: new Map(),
@@ -420,6 +433,18 @@ function getRelatedStops(stop, staticData) {
         .slice(0, RELATED_STOP_LIMIT)
         .map((candidate) => stopToApiRecord(candidate.stop, Math.round(candidate.distanceMeters)));
 }
+function getRelatedStopsFromArrivalsData(stop, staticData) {
+    const candidates = Array.from(staticData.stopsById.values())
+        .filter((candidateStop) => candidateStop.stopId !== stop.stopId)
+        .map((candidateStop) => ({
+        stop: candidateStop,
+        distanceMeters: metersBetween(stop.latitude, stop.longitude, candidateStop.latitude, candidateStop.longitude),
+    }))
+        .filter((candidate) => candidate.distanceMeters <= RELATED_STOP_RADIUS_METERS)
+        .sort((left, right) => left.distanceMeters - right.distanceMeters)
+        .slice(0, RELATED_STOP_LIMIT);
+    return candidates.map((candidate) => stopToApiRecord(candidate.stop, Math.round(candidate.distanceMeters)));
+}
 async function getFeedMessageType() {
     if (!feedMessageTypePromise) {
         feedMessageTypePromise = (async () => {
@@ -724,6 +749,134 @@ async function getStaticStopsIndexData() {
     }
     finally {
         staticStopsIndexCache.promise = null;
+    }
+}
+async function getStaticArrivalsData() {
+    if (Date.now() < staticArrivalsCache.expiresAt) {
+        return staticArrivalsCache.data;
+    }
+    if (staticArrivalsCache.promise) {
+        return staticArrivalsCache.promise;
+    }
+    staticArrivalsCache.promise = (async () => {
+        const archive = await fetchStaticGtfsArchive();
+        const routesText = archive['routes.txt'];
+        const tripsText = archive['trips.txt'];
+        const stopsText = archive['stops.txt'];
+        const stopTimesText = archive['stop_times.txt'];
+        const calendarText = archive['calendar.txt'];
+        const calendarDatesText = archive['calendar_dates.txt'];
+        if (!routesText || !tripsText || !stopsText || !stopTimesText || !calendarText) {
+            throw new Error('Static GTFS archive is missing required GTFS files.');
+        }
+        const routesById = buildRoutesById(parseCsvRows(routesText));
+        const tripsById = buildTripsById(parseCsvRows(tripsText));
+        const stopsIndex = buildStopsIndex(parseCsvRows(stopsText));
+        const stopTimesRows = parseCsvRows(stopTimesText);
+        const calendarRows = parseCsvRows(calendarText);
+        const calendarDatesRows = calendarDatesText
+            ? parseCsvRows(calendarDatesText)
+            : [];
+        const stopSchedulesByStopId = new Map();
+        const calendarsByServiceId = new Map();
+        const calendarDateExceptionsByServiceId = new Map();
+        for (const row of calendarRows) {
+            const serviceId = row.service_id?.trim();
+            const startDate = row.start_date?.trim();
+            const endDate = row.end_date?.trim();
+            if (!serviceId || !startDate || !endDate) {
+                continue;
+            }
+            calendarsByServiceId.set(serviceId, {
+                startDate,
+                endDate,
+                weekdays: [
+                    row.monday?.trim() === '1',
+                    row.tuesday?.trim() === '1',
+                    row.wednesday?.trim() === '1',
+                    row.thursday?.trim() === '1',
+                    row.friday?.trim() === '1',
+                    row.saturday?.trim() === '1',
+                    row.sunday?.trim() === '1',
+                ],
+            });
+        }
+        for (const row of calendarDatesRows) {
+            const serviceId = row.service_id?.trim();
+            const date = row.date?.trim();
+            const exceptionType = row.exception_type?.trim();
+            if (!serviceId || !date || !exceptionType) {
+                continue;
+            }
+            const serviceExceptions = calendarDateExceptionsByServiceId.get(serviceId) ?? new Map();
+            if (exceptionType === '1') {
+                serviceExceptions.set(date, true);
+            }
+            else if (exceptionType === '2') {
+                serviceExceptions.set(date, false);
+            }
+            calendarDateExceptionsByServiceId.set(serviceId, serviceExceptions);
+        }
+        for (const row of stopTimesRows) {
+            const tripId = row.trip_id?.trim();
+            const stopId = row.stop_id?.trim();
+            const arrivalTime = row.arrival_time?.trim();
+            const stopSequenceRaw = row.stop_sequence?.trim();
+            if (!tripId || !stopId || !arrivalTime || !stopSequenceRaw) {
+                continue;
+            }
+            const tripRecord = tripsById.get(tripId);
+            if (!tripRecord) {
+                continue;
+            }
+            const routeRecord = routesById.get(tripRecord.routeId);
+            if (!routeRecord) {
+                continue;
+            }
+            const { mode, label } = resolveRouteMode(routeRecord.routeTypeRaw);
+            if (!SUPPORTED_SURFACE_MODES.has(mode)) {
+                continue;
+            }
+            const stopSequence = Number.parseInt(stopSequenceRaw, 10);
+            if (Number.isNaN(stopSequence)) {
+                continue;
+            }
+            const schedules = stopSchedulesByStopId.get(stopId) ?? [];
+            schedules.push({
+                tripId,
+                stopSequence,
+                arrivalTime,
+            });
+            stopSchedulesByStopId.set(stopId, schedules);
+            const stopRecord = stopsIndex.stopsById.get(stopId);
+            if (stopRecord) {
+                stopRecord.modes.add(mode);
+                stopRecord.lines.add(routeRecord.routeShortName);
+                stopRecord.services.set(buildStopServiceKey(routeRecord.routeShortName, mode), {
+                    lineCode: routeRecord.routeShortName,
+                    mode,
+                    modeLabel: label,
+                });
+            }
+        }
+        const data = {
+            routesById,
+            tripsById,
+            stopsById: stopsIndex.stopsById,
+            stopsByCode: stopsIndex.stopsByCode,
+            stopSchedulesByStopId,
+            calendarsByServiceId,
+            calendarDateExceptionsByServiceId,
+        };
+        staticArrivalsCache.data = data;
+        staticArrivalsCache.expiresAt = Date.now() + STATIC_CACHE_TTL_MS;
+        return data;
+    })();
+    try {
+        return await staticArrivalsCache.promise;
+    }
+    finally {
+        staticArrivalsCache.promise = null;
     }
 }
 async function getStaticGtfsData() {
@@ -1316,7 +1469,7 @@ app.get('/api/arrivals', async (request, response, next) => {
             response.status(400).json({ error: 'stopCode is required.' });
             return;
         }
-        const staticData = await getStaticGtfsData();
+        const staticData = await getStaticArrivalsData();
         const stop = staticData.stopsByCode.get(stopCode);
         if (!stop) {
             response.status(404).json({ error: 'Fermata non trovata.' });
@@ -1325,7 +1478,7 @@ app.get('/api/arrivals', async (request, response, next) => {
         const [{ snapshot, stale: realtimeStale, warnings: realtimeWarnings }, { snapshot: vehiclePositionSnapshot, stale: vehiclePositionStale, warnings: vehiclePositionWarnings, },] = await Promise.all([getRealtimeSnapshot(), getVehiclePositionSnapshot()]);
         const nowMs = Date.now();
         const schedules = staticData.stopSchedulesByStopId.get(stop.stopId) ?? [];
-        const relatedStops = getRelatedStops(stop, staticData);
+        const relatedStops = getRelatedStopsFromArrivalsData(stop, staticData);
         const candidateServiceDates = getCandidateServiceDates(nowMs);
         const arrivalsByTripInstance = new Map();
         for (const schedule of schedules) {
