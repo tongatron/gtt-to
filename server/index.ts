@@ -972,6 +972,121 @@ function buildLinePaths(
     .slice(0, 8)
 }
 
+function samplePathPoints(
+  points: LinePathPointApiRecord[],
+  maxPoints = 32,
+): LinePathPointApiRecord[] {
+  if (points.length <= maxPoints) {
+    return points
+  }
+
+  const sampled: LinePathPointApiRecord[] = []
+  const lastIndex = points.length - 1
+
+  for (let index = 0; index < maxPoints; index += 1) {
+    const pointIndex = Math.round((index / (maxPoints - 1)) * lastIndex)
+    const point = points[pointIndex]
+    if (!point) {
+      continue
+    }
+
+    const lastPoint = sampled.at(-1)
+    if (
+      lastPoint &&
+      lastPoint.latitude === point.latitude &&
+      lastPoint.longitude === point.longitude
+    ) {
+      continue
+    }
+
+    sampled.push(point)
+  }
+
+  return sampled
+}
+
+async function getRenderLinePathsData(
+  normalizedLine: string,
+): Promise<LinePathsResponse> {
+  const metadata = await getStaticRoutesTripsData()
+  const relevantTripIds = new Set<string>()
+
+  for (const tripRecord of metadata.tripsById.values()) {
+    const routeRecord = metadata.routesById.get(tripRecord.routeId)
+    if (!routeRecord) {
+      continue
+    }
+
+    const { mode } = resolveRouteMode(routeRecord.routeTypeRaw)
+    if (!SUPPORTED_SURFACE_MODES.has(mode)) {
+      continue
+    }
+
+    if (routeRecord.routeShortName.toUpperCase() === normalizedLine) {
+      relevantTripIds.add(tripRecord.tripId)
+    }
+  }
+
+  if (relevantTripIds.size === 0) {
+    return {
+      fetchedAt: new Date().toISOString(),
+      line: normalizedLine,
+      paths: [],
+    }
+  }
+
+  const archive = await fetchStaticGtfsArchive()
+  const stopsText = archive['stops.txt']
+  const stopTimesText = archive['stop_times.txt']
+  if (!stopsText || !stopTimesText) {
+    throw new Error('Static GTFS archive is missing files for render line paths.')
+  }
+
+  const stopsIndex = buildStopsIndex(parseCsvRows(stopsText))
+  const tripStopPointsByTripId = new Map<string, OrderedPathPointRecord[]>()
+
+  await scanStopTimesFile(
+    stopTimesText,
+    metadata.tripsById,
+    metadata.routesById,
+    stopsIndex.stopsById,
+    (schedule, stopId) => {
+      if (!relevantTripIds.has(schedule.tripId)) {
+        return
+      }
+
+      const stopRecord = stopsIndex.stopsById.get(stopId)
+      if (!stopRecord) {
+        return
+      }
+
+      const points = tripStopPointsByTripId.get(schedule.tripId) ?? []
+      points.push({
+        sequence: schedule.stopSequence,
+        latitude: stopRecord.latitude,
+        longitude: stopRecord.longitude,
+      })
+      tripStopPointsByTripId.set(schedule.tripId, points)
+    },
+  )
+
+  const linePaths = buildLinePaths(normalizedLine, {
+    routesById: metadata.routesById,
+    tripsById: metadata.tripsById,
+    shapesById: new Map(),
+    tripStopPointsByTripId,
+  }).map((path) => ({
+    ...path,
+    points: samplePathPoints(path.points),
+  }))
+
+  return {
+    fetchedAt: new Date().toISOString(),
+    line: normalizedLine,
+    paths: linePaths,
+  }
+}
+
 function getRelatedStops(stop: StopRecord, staticData: StaticGtfsData): StopApiRecord[] {
   return Array.from(staticData.stopsById.values())
     .filter(
@@ -2712,12 +2827,7 @@ app.get('/api/line-paths', async (request, response, next) => {
     }
 
     if (IS_RENDER_RUNTIME) {
-      const payload: LinePathsResponse = {
-        fetchedAt: new Date().toISOString(),
-        line: rawLine,
-        paths: [],
-      }
-
+      const payload = await getRenderLinePathsData(rawLine.trim().toUpperCase())
       response.setHeader('Cache-Control', 'no-store')
       response.json(payload)
       return
