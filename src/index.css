@@ -1,21 +1,21 @@
 @import url('https://fonts.googleapis.com/css2?family=Titillium+Web:wght@400;600;700&display=swap');
 
 :root {
-  --gtt-blue: #0057b8;
-  --gtt-blue-strong: #00438f;
-  --gtt-blue-soft: #3a7abd;
-  --gtt-yellow: #ffd900;
-  --gtt-yellow-deep: #e5bf00;
+  --gtt-blue: #0f66b3;
+  --gtt-blue-strong: #0b4f8d;
+  --gtt-blue-soft: #73a6d3;
+  --gtt-yellow: #f3d768;
+  --gtt-yellow-deep: #dbbe4c;
   --gtt-white: #ffffff;
-  --gtt-surface: #f3f5f8;
-  --gtt-surface-soft: rgba(248, 250, 252, 0.94);
-  --gtt-card: rgba(255, 255, 255, 0.94);
-  --gtt-card-soft: rgba(246, 248, 251, 0.9);
-  --gtt-border: rgba(0, 87, 184, 0.14);
-  --gtt-border-strong: rgba(0, 87, 184, 0.26);
-  --gtt-shadow: rgba(0, 63, 133, 0.12);
-  --gtt-text: #16385e;
-  --gtt-muted: #63758e;
+  --gtt-surface: #f8fafc;
+  --gtt-surface-soft: rgba(247, 250, 253, 0.96);
+  --gtt-card: rgba(255, 255, 255, 0.97);
+  --gtt-card-soft: rgba(245, 248, 252, 0.94);
+  --gtt-border: rgba(15, 102, 179, 0.12);
+  --gtt-border-strong: rgba(15, 102, 179, 0.22);
+  --gtt-shadow: rgba(17, 52, 86, 0.08);
+  --gtt-text: #16385c;
+  --gtt-muted: #6e7f92;
   --gtt-success: #16a34a;
   font-family:
     'Titillium Web',
@@ -26,9 +26,9 @@
   font-weight: 400;
   color: var(--gtt-text);
   background:
-    radial-gradient(circle at top left, rgba(255, 217, 0, 0.24), transparent 30%),
-    radial-gradient(circle at top right, rgba(0, 87, 184, 0.14), transparent 28%),
-    linear-gradient(180deg, #ffffff 0%, #f5f7fa 54%, #eceff3 100%);
+    radial-gradient(circle at top left, rgba(243, 215, 104, 0.16), transparent 24%),
+    radial-gradient(circle at top right, rgba(15, 102, 179, 0.1), transparent 22%),
+    linear-gradient(180deg, #ffffff 0%, #f8fbfe 54%, #f2f6fb 100%);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -55,8 +55,8 @@ body::before {
   position: fixed;
   inset: 0;
   background-image:
-    linear-gradient(rgba(0, 87, 184, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 87, 184, 0.03) 1px, transparent 1px);
+    linear-gradient(rgba(15, 102, 179, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 102, 179, 0.022) 1px, transparent 1px);
   background-size: 32px 32px;
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.65), transparent 85%);
   pointer-events: none;
