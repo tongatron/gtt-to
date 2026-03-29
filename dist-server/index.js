@@ -23,7 +23,6 @@ const DEFAULT_NEARBY_RADIUS_METERS = 700;
 const DEFAULT_NEARBY_LIMIT = 12;
 const RELATED_STOP_RADIUS_METERS = 400;
 const RELATED_STOP_LIMIT = 6;
-const RENDER_OFFICIAL_ARRIVALS_WINDOW_MINUTES = 60;
 const ROME_TIME_ZONE = 'Europe/Rome';
 const TORINO_VIEWBOX = '7.52,45.16,7.83,44.97';
 const TORINO_QUERY_SUFFIX = 'Torino, Piemonte, Italia';
@@ -1219,7 +1218,6 @@ async function fetchOfficialStopArrivals(stopCode, stop) {
         stop: stopToApiRecord(renderStop),
         relatedStops: [],
         arrivals: arrivals
-            .filter((arrival) => arrival.minutesUntil <= RENDER_OFFICIAL_ARRIVALS_WINDOW_MINUTES)
             .sort((left, right) => left.minutesUntil - right.minutesUntil)
             .slice(0, 18),
     };
