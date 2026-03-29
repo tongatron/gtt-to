@@ -472,6 +472,7 @@ function App() {
   const [loadingLocation, setLoadingLocation] = useState(false)
   const [searchingAddress, setSearchingAddress] = useState(false)
   const [searchingStopCode, setSearchingStopCode] = useState(false)
+  const [showAddressSearch, setShowAddressSearch] = useState(false)
   const [loadingStopArrivals, setLoadingStopArrivals] = useState(false)
   const [loadingVehicles, setLoadingVehicles] = useState(false)
   const [refreshingVehicles, setRefreshingVehicles] = useState(false)
@@ -1298,6 +1299,14 @@ function App() {
     return directionFilteredPaths.length > 0 ? directionFilteredPaths : paths
   }, [linePathsResponse, selectedDirectionKey])
 
+  const extraLiveVehiclesCount = useMemo(() => {
+    if (!selectedLine) {
+      return 0
+    }
+
+    return Math.max(0, visibleVehicles.length - selectedLineArrivals.length)
+  }, [selectedLine, selectedLineArrivals.length, visibleVehicles.length])
+
   const activeDirectionChoice = useMemo(
     () => directionChoices.find((choice) => choice.key === selectedDirectionKey) ?? null,
     [directionChoices, selectedDirectionKey],
@@ -1400,36 +1409,8 @@ function App() {
     }
   }, [selectedLineArrivals])
 
-  const summaryMessage = useMemo(() => {
-    if (simulationMode) {
-      return 'Simulazione attiva: fermata 240, linea 4, due direzioni e mezzi in movimento.'
-    }
-
-    if (!entryMode) {
-      return 'Scegli come partire: posizione, numero fermata o indirizzo.'
-    }
-
-    if (!selectedStop) {
-      if (entryMode === 'stop') {
-        return 'Inserisci una palina GTT per andare subito alla fermata.'
-      }
-
-      return 'Scegli una fermata vicina per vedere i mezzi utili in attesa.'
-    }
-
-    if (!selectedLine) {
-      return `Fermata ${selectedStop.stopCode} selezionata. Ora scegli una linea utile.`
-    }
-
-    if (loadingVehicles) {
-      return `Caricamento mezzi live della linea ${selectedLine}...`
-    }
-
-    return `${visibleVehicles.length} mezzi live trovati per la linea ${selectedLine}.`
-  }, [entryMode, loadingVehicles, selectedLine, selectedStop, simulationMode, visibleVehicles.length])
-
   const shouldShowMapSection = Boolean(
-    selectedStop || (focusLocation?.kind === 'address' && nearbyStops.length > 0),
+    focusLocation?.kind === 'address' && nearbyStops.length > 0,
   )
 
   return (
@@ -1451,15 +1432,6 @@ function App() {
             </button>
           </div>
 
-          <div className="summary-strip">
-            <span className="mode-badge">{summaryMessage}</span>
-            {selectedStop ? (
-              <span className="mode-badge">Fermata {selectedStop.stopCode}</span>
-            ) : null}
-            {selectedLine ? <span className="mode-badge">Linea {selectedLine}</span> : null}
-            {simulationMode ? <span className="mode-badge">Demo attiva</span> : null}
-          </div>
-
           <div className="entry-grid">
             {recentSelections.length > 0 ? (
               <div className="recent-selection-card compact-recent-card">
@@ -1473,9 +1445,9 @@ function App() {
                         type="button"
                         onClick={() => void handleRecentSelection(selection)}
                       >
-                        <strong>{selection.stopCode}</strong>
+                        <span>Fermata {selection.stopCode}</span>
                         <span>&middot;</span>
-                        <span>{selection.lineCode}</span>
+                        <span>Linea {selection.lineCode}</span>
                       </button>
                     ))}
                   </div>
@@ -1483,22 +1455,8 @@ function App() {
               </div>
             ) : null}
 
-            <button
-              className={`entry-button location-entry-button${entryMode === 'location' ? ' is-active' : ''}`}
-              type="button"
-              onClick={handleUseMyLocation}
-              disabled={loadingLocation}
-              aria-label={loadingLocation ? 'Localizzo' : 'Usa la mia posizione'}
-              title={loadingLocation ? 'Localizzo...' : 'Usa la mia posizione'}
-            >
-              <span className="location-entry-icon" aria-hidden="true">
-                ◎
-              </span>
-              <strong>{loadingLocation ? 'Localizzo…' : 'Localizzazione'}</strong>
-            </button>
-
             <form
-              className={`entry-form-card compact-entry-form${entryMode === 'stop' ? ' is-active' : ''}`}
+              className={`entry-form-card compact-entry-form primary-stop-form${entryMode === 'stop' ? ' is-active' : ''}`}
               onSubmit={handleStopCodeSubmit}
             >
               <label className="search-field">
@@ -1517,24 +1475,53 @@ function App() {
               </button>
             </form>
 
-            <form
-              className={`entry-form-card compact-entry-form${entryMode === 'address' ? ' is-active' : ''}`}
-              onSubmit={handleAddressSubmit}
-            >
-              <label className="search-field">
-                <span>Indirizzo</span>
-                <input
-                  type="search"
-                  value={addressInput}
-                  placeholder="Es. Via Po 17"
-                  onChange={(event) => setAddressInput(event.target.value)}
-                />
-              </label>
-
-              <button className="secondary-button" type="submit" disabled={searchingAddress}>
-                {searchingAddress ? 'Cerco...' : 'Trova fermate vicine'}
+            <div className="secondary-entry-row">
+              <button
+                className={`entry-button location-entry-button${entryMode === 'location' ? ' is-active' : ''}`}
+                type="button"
+                onClick={handleUseMyLocation}
+                disabled={loadingLocation}
+                aria-label={loadingLocation ? 'Localizzo' : 'Usa la mia posizione'}
+                title={loadingLocation ? 'Localizzo...' : 'Usa la mia posizione'}
+              >
+                <span className="location-entry-icon" aria-hidden="true">
+                  ◎
+                </span>
+                <strong>{loadingLocation ? 'Localizzo…' : 'Localizzazione'}</strong>
               </button>
-            </form>
+
+              {showAddressSearch ? (
+                <form
+                  className={`entry-form-card compact-entry-form compact-address-form${entryMode === 'address' ? ' is-active' : ''}`}
+                  onSubmit={handleAddressSubmit}
+                >
+                  <label className="search-field">
+                    <span>Cerca fermata</span>
+                    <input
+                      type="search"
+                      value={addressInput}
+                      placeholder="Es. Via Po 17"
+                      onChange={(event) => setAddressInput(event.target.value)}
+                    />
+                  </label>
+
+                  <button className="secondary-button" type="submit" disabled={searchingAddress}>
+                    {searchingAddress ? 'Cerco...' : 'Trova fermate vicine'}
+                  </button>
+                </form>
+              ) : (
+                <button
+                  className={`entry-button address-entry-button${entryMode === 'address' ? ' is-active' : ''}`}
+                  type="button"
+                  onClick={() => setShowAddressSearch(true)}
+                >
+                  <span className="address-entry-icon" aria-hidden="true">
+                    ⌕
+                  </span>
+                  <strong>Cerca fermata</strong>
+                </button>
+              )}
+            </div>
           </div>
 
           {error ? <p className="error-box">{error}</p> : null}
@@ -1544,13 +1531,10 @@ function App() {
         <section ref={waitSectionRef} className="mobile-card mobile-map-card">
           <div className="map-panel-header compact-map-header">
             <div>
-              <p className="map-label">Mappa attesa</p>
               <h2>
-                {selectedLine
-                  ? `Linea ${selectedLine} verso la fermata`
-                  : selectedStop
-                    ? `Fermata ${selectedStop.stopCode}`
-                    : 'Fermate vicine all’indirizzo'}
+                {selectedStop
+                  ? `Fermata: ${selectedStop.stopCode} - ${selectedStop.stopName}`
+                  : 'Fermate vicine all’indirizzo'}
               </h2>
             </div>
             {selectedStop || focusLocation?.kind === 'address' ? (
@@ -1563,10 +1547,6 @@ function App() {
 
           {selectedStop ? (
             <div className="stop-summary-card">
-              <p className="stop-summary-title">
-                Fermata: <strong>{selectedStop.stopCode}</strong> -{' '}
-                <strong>{selectedStop.stopName}</strong>
-              </p>
               {stopSummaryLines.length > 0 ? (
                 <div className="stop-summary-list">
                   {stopSummaryLines.map((summary) => (
@@ -1602,36 +1582,31 @@ function App() {
                 </div>
               ) : null}
 
-              <div className="map-option-row">
-                <button
-                  className="ghost-button map-toggle-button"
-                  type="button"
-                  onClick={() => setIsMapVisible((value) => !value)}
-                >
-                  {isMapVisible ? 'Nascondi mappa' : 'Mostra mappa'}
-                </button>
-              </div>
-
-              {isMapVisible ? (
-                <div className="map-frame mobile-map-frame">
-                  <MapView
-                    lineLabel={selectedLine}
-                    vehicleMarkers={visibleVehicles}
-                    linePaths={visibleLinePaths}
-                    focusLocation={focusLocation}
-                    nearbyStops={nearbyStops}
-                    showStops={nearbyStops.length > 0}
-                    selectedStopCode={selectedStopCode}
-                    selectedStop={selectedStop}
-                    activeLine={selectedLine}
-                    selectedStopArrivals={selectedStopArrivals}
-                    loadingStopArrivals={loadingStopArrivals}
-                    recenterFocusRequest={recenterFocusRequest}
-                    onSelectStop={handleStopSelect}
-                    onSelectLine={handleLineSelect}
-                  />
-                </div>
+              {selectedLine && extraLiveVehiclesCount > 0 ? (
+                <p className="extra-live-note">
+                  Altri {extraLiveVehiclesCount} mezzi live sulla mappa, senza previsione di
+                  arrivo
+                </p>
               ) : null}
+
+              <div className="map-frame mobile-map-frame">
+                <MapView
+                  lineLabel={selectedLine}
+                  vehicleMarkers={visibleVehicles}
+                  linePaths={visibleLinePaths}
+                  focusLocation={focusLocation}
+                  nearbyStops={nearbyStops}
+                  showStops={nearbyStops.length > 0}
+                  selectedStopCode={selectedStopCode}
+                  selectedStop={selectedStop}
+                  activeLine={selectedLine}
+                  selectedStopArrivals={selectedStopArrivals}
+                  loadingStopArrivals={loadingStopArrivals}
+                  recenterFocusRequest={recenterFocusRequest}
+                  onSelectStop={handleStopSelect}
+                  onSelectLine={handleLineSelect}
+                />
+              </div>
             </div>
           ) : null}
 

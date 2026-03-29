@@ -809,18 +809,6 @@ export function MapView({
         />
       ))}
 
-      {renderedLinePaths.flatMap(({ arrows }) =>
-        arrows.map((arrow) => (
-          <Marker
-            key={arrow.key}
-            position={[arrow.latitude, arrow.longitude]}
-            icon={createRouteArrowIcon(arrow.color, arrow.bearing)}
-            zIndexOffset={360}
-            interactive={false}
-          />
-        )),
-      )}
-
       {focusLocation && !combinedFocusStop ? (
         <Marker
           position={[focusLocation.latitude, focusLocation.longitude]}

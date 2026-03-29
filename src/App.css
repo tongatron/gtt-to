@@ -52,7 +52,7 @@
 .entry-grid {
   display: grid;
   gap: 0.75rem;
-  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .recent-selection-card {
@@ -157,6 +157,43 @@
   background: rgba(0, 87, 184, 0.12);
   color: var(--gtt-blue);
   font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.address-entry-button,
+.compact-address-form,
+.secondary-entry-row {
+  width: 100%;
+}
+
+.primary-stop-form {
+  grid-column: 1 / -1;
+}
+
+.secondary-entry-row {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.address-entry-button {
+  min-height: 4.2rem;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.address-entry-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  background: rgba(0, 87, 184, 0.08);
+  color: var(--gtt-blue);
+  font-size: 1.15rem;
   font-weight: 700;
 }
 
@@ -382,6 +419,7 @@
 .stop-summary-card {
   display: grid;
   gap: 0.8rem;
+  margin-top: 0.35rem;
   padding: 0.95rem 1rem;
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.9);
@@ -398,6 +436,13 @@
 .stop-summary-list {
   display: grid;
   gap: 0.75rem;
+}
+
+.extra-live-note {
+  margin: 0;
+  color: var(--gtt-muted);
+  font-size: 0.92rem;
+  line-height: 1.4;
 }
 
 .map-option-row {
@@ -552,6 +597,7 @@
 .live-update-badge {
   display: inline-flex;
   align-items: center;
+  align-self: flex-start;
   gap: 0.45rem;
   min-height: 2rem;
   padding: 0.35rem 0.7rem;
@@ -601,7 +647,7 @@
 
 @media (min-width: 720px) {
   .entry-grid {
-    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .recent-selection-card {
@@ -636,7 +682,7 @@
   }
 
   .entry-grid {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .compact-entry-form {
@@ -645,6 +691,10 @@
 
   .location-entry-button {
     grid-column: 1 / -1;
+  }
+
+  .secondary-entry-row {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .home-topbar {
