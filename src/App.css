@@ -37,8 +37,8 @@
   position: absolute;
   inset: 0 0 auto 0;
   height: 4px;
-  background: linear-gradient(90deg, var(--gtt-blue), var(--gtt-yellow));
-  opacity: 0.9;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.65), rgba(170, 176, 184, 0.45));
+  opacity: 1;
   pointer-events: none;
 }
 
@@ -105,7 +105,7 @@
   gap: 0.35rem;
   border: 1px solid var(--gtt-border);
   border-radius: 999px;
-  background: rgba(15, 102, 179, 0.06);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--gtt-blue);
   cursor: pointer;
 }
@@ -158,7 +158,7 @@
   grid-template-columns: auto 1fr;
   align-items: center;
   gap: 0.7rem;
-  background: linear-gradient(135deg, rgba(15, 102, 179, 0.06), rgba(243, 215, 104, 0.08));
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.04), rgba(120, 127, 136, 0.08));
 }
 
 .location-entry-icon {
@@ -168,7 +168,7 @@
   width: 2rem;
   height: 2rem;
   border-radius: 999px;
-  background: rgba(15, 102, 179, 0.1);
+  background: rgba(255, 255, 255, 0.08);
   color: var(--gtt-blue);
   font-size: 1.2rem;
   font-weight: 700;
@@ -205,7 +205,7 @@
   width: 2rem;
   height: 2rem;
   border-radius: 999px;
-  background: rgba(15, 102, 179, 0.08);
+  background: rgba(255, 255, 255, 0.06);
   color: var(--gtt-blue);
   font-size: 1.15rem;
   font-weight: 700;
@@ -238,7 +238,7 @@
 .stop-list-button.is-active,
 .line-choice-button.is-active {
   border-color: var(--gtt-blue);
-  box-shadow: 0 0 0 3px rgba(0, 87, 184, 0.12);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06);
 }
 
 .ghost-button,
@@ -252,14 +252,16 @@
 }
 
 .secondary-button {
-  background: var(--gtt-blue);
-  color: var(--gtt-white);
+  background: #e7ecf3;
+  color: #11151b;
   border-color: var(--gtt-blue);
-  box-shadow: 0 6px 16px rgba(15, 102, 179, 0.18);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .ghost-button {
-  background: var(--gtt-white);
+  background: rgba(255, 255, 255, 0.02);
   color: var(--gtt-blue);
 }
 
@@ -437,7 +439,7 @@
   margin-top: 0.35rem;
   padding: 0.95rem 1rem;
   border-radius: 22px;
-  background: var(--gtt-white);
+  background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--gtt-border);
 }
 
@@ -486,7 +488,7 @@
   gap: 1rem;
   align-items: center;
   padding: 0.7rem 0.9rem;
-  background: rgba(15, 102, 179, 0.055);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--gtt-text);
   border-radius: 18px;
 }
@@ -537,8 +539,8 @@
 }
 
 .stop-summary-item.is-active .stop-summary-line {
-  background: rgba(243, 215, 104, 0.18);
-  border: 1px solid rgba(15, 102, 179, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .stop-list,
@@ -556,7 +558,7 @@
   text-align: left;
   border-radius: 16px;
   border: 1px solid var(--gtt-border);
-  background: var(--gtt-white);
+  background: rgba(255, 255, 255, 0.02);
   color: var(--gtt-text);
   cursor: pointer;
 }
@@ -576,7 +578,7 @@
 }
 
 .wait-banner {
-  background: rgba(255, 217, 0, 0.12);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .mobile-arrival-list {
@@ -607,7 +609,7 @@
 
 .arrival-select-button.is-active {
   border-color: var(--gtt-blue);
-  box-shadow: 0 0 0 3px rgba(0, 87, 184, 0.12);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06);
 }
 
 .live-update-badge {
@@ -618,9 +620,9 @@
   min-height: 2rem;
   padding: 0.35rem 0.7rem;
   border-radius: 999px;
-  background: rgba(22, 163, 74, 0.08);
-  border: 1px solid rgba(22, 163, 74, 0.16);
-  color: #187a40;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.22);
+  color: #7ef0a8;
   font-size: 0.88rem;
   font-weight: 700;
 }
@@ -629,8 +631,8 @@
   width: 0.7rem;
   height: 0.7rem;
   border-radius: 999px;
-  background: #16a34a;
-  box-shadow: 0 0 0 rgba(22, 163, 74, 0.35);
+  background: #22c55e;
+  box-shadow: 0 0 0 rgba(34, 197, 94, 0.22);
   animation: live-update-pulse 1.2s ease-in-out infinite;
 }
 
@@ -1257,7 +1259,7 @@
 
 .line-select:focus {
   border-color: var(--gtt-border-strong);
-  box-shadow: 0 0 0 3px rgba(0, 87, 184, 0.12);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06);
 }
 
 .action-row {
@@ -1295,7 +1297,7 @@
 }
 
 .secondary-button {
-  background: rgba(0, 87, 184, 0.08);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--gtt-blue);
 }
 
@@ -1331,8 +1333,8 @@
 .warning-box {
   display: grid;
   gap: 0.45rem;
-  background: rgba(255, 217, 0, 0.2);
-  color: var(--gtt-blue-strong);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--gtt-text);
 }
 
 .warning-box p,
@@ -1346,7 +1348,7 @@
 }
 
 .empty-state {
-  background: rgba(0, 87, 184, 0.06);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--gtt-muted);
 }
 

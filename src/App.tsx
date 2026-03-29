@@ -1404,7 +1404,7 @@ function App() {
   }, [selectedLineArrivals])
 
   const shouldShowMapSection = Boolean(
-    focusLocation?.kind === 'address' && nearbyStops.length > 0,
+    !selectedStop && focusLocation?.kind === 'address' && nearbyStops.length > 0,
   )
 
   return (
@@ -1520,6 +1520,65 @@ function App() {
 
           {error ? <p className="error-box">{error}</p> : null}
         </header>
+
+        {selectedStop ? (
+        <section ref={waitSectionRef} className="mobile-card mobile-map-card">
+          <div className="map-panel-header compact-map-header">
+            <div>
+              <h2>{`Fermata: ${selectedStop.stopCode} - ${selectedStop.stopName}`}</h2>
+            </div>
+            <span className="live-update-badge">
+              <span className="live-update-dot" aria-hidden="true"></span>
+              LIVE
+            </span>
+          </div>
+
+          <div className="stop-summary-card">
+            {stopSummaryLines.length > 0 ? (
+              <div className="stop-summary-list">
+                {stopSummaryLines.map((summary) => (
+                  <button
+                    key={summary.key}
+                    className={`stop-summary-item${
+                      selectedLine === summary.lineCode &&
+                      selectedDirectionKey === summary.directionKey
+                        ? ' is-active'
+                        : ''
+                    }`}
+                    type="button"
+                    onClick={() =>
+                      handleLineDirectionSelect(summary.lineCode, summary.directionKey)
+                    }
+                  >
+                    <div className="stop-summary-line">
+                      <div className="stop-summary-route">
+                        <strong>Linea {summary.lineCode}</strong>
+                        <span>&rarr; {summary.destination}</span>
+                      </div>
+                      <div className="stop-summary-upcoming">
+                        <small>Attesa</small>
+                        <div className="stop-summary-minute-list">
+                          {summary.minutes.map((value) => (
+                            <span key={`${summary.key}:${value}`}>{formatMinutesUntil(value)}</span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="empty-state">nessuna previsione live</p>
+            )}
+
+            {selectedLine && extraLiveVehiclesCount > 0 ? (
+              <p className="extra-live-note">
+                Altri {extraLiveVehiclesCount} mezzi live sulla mappa, senza previsione di arrivo
+              </p>
+            ) : null}
+          </div>
+        </section>
+        ) : null}
 
         {shouldShowMapSection ? (
         <section ref={waitSectionRef} className="mobile-card mobile-map-card">
