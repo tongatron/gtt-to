@@ -48,6 +48,7 @@ body,
 body {
   margin: 0;
   color: var(--gtt-text);
+  font-family: "Titillium Web", sans-serif;
 }
 
 body::before {

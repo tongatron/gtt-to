@@ -28,11 +28,9 @@ const DEFAULT_STOPS_RADIUS_METERS = 1400
 const DEFAULT_STOPS_LIMIT = 20
 const RECENT_SELECTIONS_STORAGE_KEY = 'gtt-to:recent-selections'
 const MAX_RECENT_SELECTIONS = 3
-const SIMULATION_STOP_CODE = '240'
-const SIMULATION_LINE_CODE = '4'
-const SIMULATION_UPDATE_INTERVAL_MS = 1_000
+type InstallPromptKind = 'chromium' | 'ios' | 'macos-safari'
 
-type EntryMode = 'location' | 'stop' | 'address' | 'simulation' | null
+type EntryMode = 'location' | 'stop' | 'address' | null
 
 interface LineChoice {
   service: StopServiceRecord
@@ -67,9 +65,10 @@ interface RecentSelection {
   savedAt: string
 }
 
-interface SimulationSeed {
-  stop: StopRecord
-  paths: LinePathRecord[]
+interface BeforeInstallPromptEvent extends Event {
+  readonly platforms?: string[]
+  prompt(): Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
 }
 
 function formatTime(value: string | null): string {
@@ -169,6 +168,46 @@ function normalizeDirectionKey(value: string | null | undefined): string {
     .replace(/\s+/g, ' ')
 }
 
+function isStandaloneDisplayMode(): boolean {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  return (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    window.matchMedia('(display-mode: fullscreen)').matches ||
+    window.matchMedia('(display-mode: minimal-ui)').matches
+  )
+}
+
+function detectInstallPromptKind(): InstallPromptKind | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  const standalone = isStandaloneDisplayMode() || (navigator as Navigator & { standalone?: boolean }).standalone === true
+  if (standalone) {
+    return null
+  }
+
+  const userAgent = navigator.userAgent
+  const isIOS =
+    /iPhone|iPad|iPod/i.test(userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  const isSafari = /Safari/i.test(userAgent) && !/Chrome|CriOS|Edg|OPR|Firefox|FxiOS|SamsungBrowser/i.test(userAgent)
+  const isMac = /Mac/i.test(navigator.platform) && navigator.maxTouchPoints < 2
+
+  if (isIOS && isSafari) {
+    return 'ios'
+  }
+
+  if (isMac && isSafari) {
+    return 'macos-safari'
+  }
+
+  return null
+}
+
 function calculateBearing(
   start: { latitude: number; longitude: number },
   end: { latitude: number; longitude: number },
@@ -258,95 +297,6 @@ function interpolatePathPosition(path: LinePathRecord, progress: number): {
     longitude: segment.start.longitude + (segment.end.longitude - segment.start.longitude) * ratio,
     bearing: calculateBearing(segment.start, segment.end),
   }
-}
-
-function buildSimulatedArrivals(
-  stop: StopRecord,
-  paths: LinePathRecord[],
-  now: Date,
-): ArrivalRecord[] {
-  const directionPaths = paths.slice(0, 2)
-
-  return directionPaths
-    .flatMap((path, pathIndex) => {
-      const headsign = path.headsign ?? `Direzione ${pathIndex + 1}`
-      const minuteOffsets = pathIndex === 0 ? [5, 11, 15] : [7, 12, 14]
-
-      return minuteOffsets.map((minutesUntil, arrivalIndex) => {
-        const predictedDate = new Date(now.getTime() + minutesUntil * 60_000)
-        const position = interpolatePathPosition(
-          path,
-          Math.max(0.05, 0.82 - arrivalIndex * 0.18 - pathIndex * 0.04),
-        )
-
-        return {
-          tripId: `sim-arrival:${path.pathId}:${arrivalIndex}`,
-          lineCode: SIMULATION_LINE_CODE,
-          routeId: `${SIMULATION_LINE_CODE}:${path.directionId ?? pathIndex}`,
-          routeName: `Linea ${SIMULATION_LINE_CODE}`,
-          headsign,
-          mode: 'tram',
-          modeLabel: 'Tram',
-          routeColor: path.routeColor ?? '#ffd900',
-          routeTextColor: path.routeTextColor ?? '#16385e',
-          scheduledArrival: predictedDate.toISOString(),
-          predictedArrival: predictedDate.toISOString(),
-          delaySeconds: 0,
-          minutesUntil,
-          vehicleId: `sim-vehicle:${path.pathId}:${arrivalIndex}`,
-          vehicleLabel: `${SIMULATION_LINE_CODE}${pathIndex + 1}${arrivalIndex + 1}`,
-          vehiclePosition: position
-            ? {
-                latitude: position.latitude,
-                longitude: position.longitude,
-                bearing: position.bearing,
-                speedMetersPerSecond: 7,
-                timestamp: now.toISOString(),
-              }
-            : null,
-          realtime: true,
-        }
-      })
-    })
-    .sort((left, right) => left.minutesUntil - right.minutesUntil)
-}
-
-function buildSimulatedVehicles(paths: LinePathRecord[], now: Date): LineVehicleRecord[] {
-  const directionPaths = paths.slice(0, 2)
-  const phaseSeconds = now.getTime() / 1000
-
-  return directionPaths.flatMap((path, pathIndex) => {
-    const headsign = path.headsign ?? `Direzione ${pathIndex + 1}`
-    const vehicleOffsets = pathIndex === 0 ? [0.18, 0.62] : [0.32, 0.78]
-
-    return vehicleOffsets.flatMap((offset, vehicleIndex) => {
-      const progress = (offset + phaseSeconds * 0.0013 + pathIndex * 0.08) % 1
-      const position = interpolatePathPosition(path, progress)
-
-      if (!position) {
-        return []
-      }
-
-      return {
-        tripId: `sim-trip:${path.pathId}:${vehicleIndex}`,
-        vehicleId: `sim-vehicle:${path.pathId}:${vehicleIndex}`,
-        vehicleLabel: `${SIMULATION_LINE_CODE}${pathIndex + 1}${vehicleIndex + 1}`,
-        lineCode: SIMULATION_LINE_CODE,
-        routeId: `${SIMULATION_LINE_CODE}:${path.directionId ?? pathIndex}`,
-        routeName: `Linea ${SIMULATION_LINE_CODE}`,
-        headsign,
-        mode: 'tram',
-        modeLabel: 'Tram',
-        routeColor: path.routeColor ?? '#ffd900',
-        routeTextColor: path.routeTextColor ?? '#16385e',
-        latitude: position.latitude,
-        longitude: position.longitude,
-        bearing: position.bearing,
-        speedMetersPerSecond: 7 + vehicleIndex,
-        timestamp: now.toISOString(),
-      }
-    })
-  })
 }
 
 function readRecentSelections(): RecentSelection[] {
@@ -466,8 +416,10 @@ function App() {
   const [vehiclesResponse, setVehiclesResponse] = useState<LineVehiclesResponse | null>(null)
   const [linePathsResponse, setLinePathsResponse] = useState<LinePathsResponse | null>(null)
   const [recentSelections, setRecentSelections] = useState<RecentSelection[]>([])
-  const [simulationMode, setSimulationMode] = useState(false)
-  const [simulationSeed, setSimulationSeed] = useState<SimulationSeed | null>(null)
+  const [deferredInstallPrompt, setDeferredInstallPrompt] =
+    useState<BeforeInstallPromptEvent | null>(null)
+  const [installPromptKind, setInstallPromptKind] = useState<InstallPromptKind | null>(null)
+  const [installPromptDismissed, setInstallPromptDismissed] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loadingLocation, setLoadingLocation] = useState(false)
   const [searchingAddress, setSearchingAddress] = useState(false)
@@ -480,6 +432,39 @@ function App() {
   const [nowTickMs, setNowTickMs] = useState(() => Date.now())
   const waitSectionRef = useRef<HTMLElement | null>(null)
   const lastScrolledWaitKeyRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const refreshInstallPrompt = () => {
+      if (deferredInstallPrompt) {
+        setInstallPromptKind(isStandaloneDisplayMode() ? null : 'chromium')
+        return
+      }
+
+      setInstallPromptKind(detectInstallPromptKind())
+    }
+
+    refreshInstallPrompt()
+
+    const handleBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault()
+      setDeferredInstallPrompt(event as BeforeInstallPromptEvent)
+      setInstallPromptKind(isStandaloneDisplayMode() ? null : 'chromium')
+      setInstallPromptDismissed(false)
+    }
+
+    const handleInstalled = () => {
+      setDeferredInstallPrompt(null)
+      setInstallPromptKind(null)
+    }
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+    window.addEventListener('appinstalled', handleInstalled)
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+      window.removeEventListener('appinstalled', handleInstalled)
+    }
+  }, [deferredInstallPrompt])
 
   const loadNearbyStops = useCallback(async (location: FocusLocation, signal?: AbortSignal) => {
     try {
@@ -955,8 +940,6 @@ function App() {
   )
 
   const handleResetFlow = useCallback(() => {
-    setSimulationMode(false)
-    setSimulationSeed(null)
     setEntryMode(null)
     setAddressInput('')
     setStopCodeInput('')
@@ -971,45 +954,6 @@ function App() {
     setError(null)
     setRecenterFocusRequest(0)
   }, [])
-
-  const handleStartSimulation = useCallback(async () => {
-    try {
-      setError(null)
-      setSimulationMode(false)
-      setSimulationSeed(null)
-      setEntryMode('simulation')
-      setSelectedLine(SIMULATION_LINE_CODE)
-      setSelectedDirectionKey(null)
-
-      const [stopResponse, linePaths] = await Promise.all([
-        loadStopArrivals(SIMULATION_STOP_CODE),
-        loadLinePaths(SIMULATION_LINE_CODE),
-      ])
-
-      if (!stopResponse || !linePaths) {
-        return
-      }
-
-      startTransition(() => {
-        setSimulationMode(true)
-        setSimulationSeed({
-          stop: stopResponse.stop,
-          paths: linePaths.paths.filter((path) => path.lineCode === SIMULATION_LINE_CODE),
-        })
-        setNearbyStops([stopResponse.stop])
-        setFocusLocation({
-          latitude: stopResponse.stop.latitude,
-          longitude: stopResponse.stop.longitude,
-          label: 'Utente in simulazione alla fermata 240',
-          kind: 'user',
-        })
-        setSelectedStopCode(stopResponse.stop.stopCode)
-        setRecenterFocusRequest((value) => value + 1)
-      })
-    } catch {
-      setError('Impossibile avviare la simulazione.')
-    }
-  }, [loadLinePaths, loadStopArrivals])
 
   useEffect(() => {
     setRecentSelections(readRecentSelections())
@@ -1026,58 +970,6 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!simulationMode || !simulationSeed) {
-      return
-    }
-
-    const updateSimulation = () => {
-      const now = new Date()
-      const simulatedArrivals = buildSimulatedArrivals(
-        simulationSeed.stop,
-        simulationSeed.paths,
-        now,
-      )
-      const simulatedVehicles = buildSimulatedVehicles(simulationSeed.paths, now)
-
-      startTransition(() => {
-        setSelectedStopResponse({
-          fetchedAt: now.toISOString(),
-          feedTimestamp: now.toISOString(),
-          stale: false,
-          warnings: ['Simulazione attiva: dati live generati localmente.'],
-          stop: simulationSeed.stop,
-          relatedStops: [],
-          arrivals: simulatedArrivals,
-        })
-        setVehiclesResponse({
-          fetchedAt: now.toISOString(),
-          feedTimestamp: now.toISOString(),
-          stale: false,
-          warnings: ['Simulazione attiva: mezzi in movimento generati localmente.'],
-          line: SIMULATION_LINE_CODE,
-          vehicles: simulatedVehicles,
-        })
-        setLinePathsResponse({
-          fetchedAt: now.toISOString(),
-          line: SIMULATION_LINE_CODE,
-          paths: simulationSeed.paths,
-        })
-      })
-    }
-
-    updateSimulation()
-    const intervalId = window.setInterval(updateSimulation, SIMULATION_UPDATE_INTERVAL_MS)
-
-    return () => {
-      window.clearInterval(intervalId)
-    }
-  }, [simulationMode, simulationSeed])
-
-  useEffect(() => {
-    if (simulationMode) {
-      return
-    }
-
     const intervalId = window.setInterval(() => {
       if (selectedLine) {
         void loadVehicles(selectedLine, { refresh: true })
@@ -1087,13 +979,9 @@ function App() {
     return () => {
       window.clearInterval(intervalId)
     }
-  }, [loadVehicles, selectedLine, simulationMode])
+  }, [loadVehicles, selectedLine])
 
   useEffect(() => {
-    if (simulationMode) {
-      return
-    }
-
     if (!selectedStopCode) {
       return
     }
@@ -1184,10 +1072,6 @@ function App() {
   }, [stopWideArrivals])
 
   useEffect(() => {
-    if (simulationMode) {
-      return
-    }
-
     if (selectedLine) {
       const abortController = new AbortController()
       void loadVehicles(selectedLine, { signal: abortController.signal })
@@ -1200,7 +1084,7 @@ function App() {
 
     setVehiclesResponse(null)
     setLinePathsResponse(null)
-  }, [loadLinePaths, loadVehicles, selectedLine, simulationMode])
+  }, [loadLinePaths, loadVehicles, selectedLine])
 
   const selectedLineArrivals = useMemo(() => {
     if (!selectedLine) {
@@ -1404,8 +1288,31 @@ function App() {
   }, [selectedLineArrivals])
 
   const shouldShowMapSection = Boolean(
-    !selectedStop && focusLocation?.kind === 'address' && nearbyStops.length > 0,
+    !selectedStop &&
+      nearbyStops.length > 0 &&
+      (focusLocation?.kind === 'address' || focusLocation?.kind === 'user'),
   )
+
+  const canShowInstallPrompt = Boolean(installPromptKind && !installPromptDismissed)
+
+  const handleInstallApp = useCallback(async () => {
+    if (!deferredInstallPrompt) {
+      return
+    }
+
+    try {
+      await deferredInstallPrompt.prompt()
+      const choice = await deferredInstallPrompt.userChoice
+      if (choice.outcome === 'dismissed') {
+        setInstallPromptDismissed(true)
+      }
+    } finally {
+      setDeferredInstallPrompt(null)
+      if (!isStandaloneDisplayMode()) {
+        setInstallPromptKind(detectInstallPromptKind())
+      }
+    }
+  }, [deferredInstallPrompt])
 
   return (
     <div className="app-shell simplified-shell">
@@ -1415,16 +1322,41 @@ function App() {
             <div className="hero-copy compact-hero-copy">
               <h1>GTT Radar</h1>
             </div>
-            <button
-              className={`ghost-button simulation-toggle${entryMode === 'simulation' ? ' is-active' : ''}`}
-              type="button"
-              onClick={() => {
-                void handleStartSimulation()
-              }}
-            >
-              Simulazione
-            </button>
           </div>
+
+          {canShowInstallPrompt ? (
+            <div className="install-prompt-banner" role="status">
+              <div className="install-prompt-copy">
+                <strong>Installa GTT Radar</strong>
+                <span>
+                  {installPromptKind === 'chromium'
+                    ? 'Aggiungi l’app alla schermata home o al desktop per aprirla più velocemente.'
+                    : installPromptKind === 'ios'
+                      ? 'Su iPhone o iPad apri Safari, tocca Condividi e scegli Aggiungi a Home.'
+                      : 'Su Safari per Mac usa File e poi Aggiungi al Dock per installare la web app.'}
+                </span>
+              </div>
+              <div className="install-prompt-actions">
+                {installPromptKind === 'chromium' ? (
+                  <button
+                    className="secondary-button install-prompt-button"
+                    type="button"
+                    onClick={() => void handleInstallApp()}
+                  >
+                    Installa app
+                  </button>
+                ) : null}
+                <button
+                  className="ghost-button install-prompt-dismiss"
+                  type="button"
+                  onClick={() => setInstallPromptDismissed(true)}
+                  aria-label="Chiudi suggerimento installazione"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           <div className="entry-grid">
             {recentSelections.length > 0 ? (
@@ -1588,9 +1520,13 @@ function App() {
         <section ref={waitSectionRef} className="mobile-card mobile-map-card">
           <div className="map-panel-header compact-map-header">
             <div>
-              <h2>Fermate vicine all’indirizzo</h2>
+              <h2>
+                {focusLocation?.kind === 'user'
+                  ? 'Fermate vicine alla tua posizione'
+                  : 'Fermate vicine all’indirizzo'}
+              </h2>
             </div>
-            {focusLocation?.kind === 'address' ? (
+            {focusLocation?.kind === 'address' || focusLocation?.kind === 'user' ? (
               <span className="live-update-badge">
                 <span className="live-update-dot" aria-hidden="true"></span>
                 LIVE
@@ -1622,6 +1558,17 @@ function App() {
         ) : null}
 
       </section>
+
+      <a
+        className="tongatron-link footer-tongatron-link"
+        href="https://tongatron.github.io"
+        target="_blank"
+        rel="noreferrer"
+        aria-label="Apri tongatron.github.io"
+        title="Apri tongatron.github.io"
+      >
+        <span className="tongatron-wordmark">tongatron.github.io</span>
+      </a>
     </div>
   )
 }
