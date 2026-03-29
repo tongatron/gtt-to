@@ -1464,7 +1464,11 @@ function App() {
                 />
               </label>
 
-              <button className="secondary-button" type="submit" disabled={searchingStopCode}>
+              <button
+                className="secondary-button primary-stop-submit"
+                type="submit"
+                disabled={searchingStopCode}
+              >
                 {searchingStopCode ? 'Cerco...' : 'Vai alla fermata'}
               </button>
             </form>
